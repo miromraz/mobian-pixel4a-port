@@ -158,6 +158,11 @@ kernel-config-*.txt     # the mainline kernel .config used for the build
 - `ath10k-WCN3990-board-2.bin` + `ath10k-WCN3990-firmware-5.bin` — ath10k WCN3990
   runtime firmware copied into the rootfs. `board-2.bin` must carry
   `variant=google_sunfish`; `firmware-5.bin` is the 60-byte QCA-ATH10K API header.
+- `ssh-authorized-keys` (optional) — if present, `patch.sh` apt-installs
+  `openssh-server` (in the qemu-binfmt chroot), enables `ssh.service`, drops this
+  file into `/home/mobian/.ssh/authorized_keys`, and adds a `NOPASSWD:ALL` sudoers
+  rule for `mobian`. Enables key-only SSH over USB-net (172.16.42.1) for headless
+  bringup. Dev-device convenience — drop the sudoers line for anything shipped.
 
 ## Credits / lineage
 - Kernel: [sm7150-mainline](https://github.com/sm7150-mainline/linux) fork.

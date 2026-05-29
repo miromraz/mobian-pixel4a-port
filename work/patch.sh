@@ -55,6 +55,30 @@ echo "fstab: $(grep -E '[[:space:]]/[[:space:]]' rmnt/etc/fstab)"
 for d in proc sys dev dev/pts; do mount --bind "/$d" "rmnt/$d"; done
 
 echo "chroot-arch=$(chroot rmnt /bin/sh -c 'uname -m')"
+
+# --- SSH access for autonomous host-driven work over USB-net (172.16.42.1) ---
+# Install openssh-server in the qemu-binfmt aarch64 chroot. Needs DNS for apt, so
+# swap in the host resolv.conf for the duration and restore the image's after.
+RESOLV_LINK=
+[ -L rmnt/etc/resolv.conf ] && RESOLV_LINK=$(readlink rmnt/etc/resolv.conf)
+rm -f rmnt/etc/resolv.conf; cp /etc/resolv.conf rmnt/etc/resolv.conf
+chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive sh -ec '
+  apt-get update
+  apt-get install -y --no-install-recommends openssh-server
+  ssh-keygen -A                 # generate host keys (postinst may skip under qemu)
+  systemctl enable ssh
+'
+rm -f rmnt/etc/resolv.conf
+[ -n "$RESOLV_LINK" ] && ln -s "$RESOLV_LINK" rmnt/etc/resolv.conf
+# host pubkey -> mobian (uid 1000) authorized_keys; passwordless sudo for non-interactive ops
+if [ -f ssh-authorized-keys ]; then
+  install -d -m700 rmnt/home/mobian/.ssh
+  install -m600 ssh-authorized-keys rmnt/home/mobian/.ssh/authorized_keys
+  chown -R 1000:1000 rmnt/home/mobian/.ssh
+  printf 'mobian ALL=(ALL) NOPASSWD:ALL\n' > rmnt/etc/sudoers.d/90-mobian-nopasswd
+  chmod 440 rmnt/etc/sudoers.d/90-mobian-nopasswd
+fi
+
 chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/sbin/update-initramfs -u -k "$KVER"
 
 for d in dev/pts dev sys proc; do umount "rmnt/$d"; done

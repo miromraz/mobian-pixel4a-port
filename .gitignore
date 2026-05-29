@@ -13,3 +13,5 @@
 work/*.simg
 work/output/
 recipe/output/
+# personal SSH pubkey baked into the dev image — not a repo artifact
+ssh-authorized-keys
