@@ -18,6 +18,27 @@ mkdir -p rmnt/etc/modules-load.d; echo qcom_wdt > rmnt/etc/modules-load.d/qcom_w
 # live console: last msg every cycle is "ipa 1e40000.ipa: IPA driver setup completed").
 # It's only network offload -> blacklist it so the device boots to Phosh.
 mkdir -p rmnt/etc/modprobe.d; printf 'blacklist ipa\ninstall ipa /bin/true\n' > rmnt/etc/modprobe.d/blacklist-ipa.conf
+# A/B slot persistence: mark the current boot slot successful at every boot, else the
+# bootloader falls back to the other slot after ~7 reboots and soft-bricks the device.
+# qbootctl here is the pmOS aarch64 build (musl). musl's loader path (/lib/ld-musl-*)
+# does NOT collide with glibc's (/lib/ld-linux-*), so we bundle the musl runtime
+# side-by-side and run the unmodified binary on Debian.
+install -Dm755 qbootctl rmnt/usr/sbin/qbootctl
+install -Dm755 ld-musl-aarch64.so.1 rmnt/lib/ld-musl-aarch64.so.1
+ln -sf ld-musl-aarch64.so.1 rmnt/lib/libc.musl-aarch64.so.1
+install -Dm644 /dev/stdin rmnt/usr/lib/systemd/system/qbootctl-mark.service <<'UNIT'
+[Unit]
+Description=Mark current Android A/B boot slot successful
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/qbootctl -m
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+mkdir -p rmnt/etc/systemd/system/multi-user.target.wants
+ln -sf /usr/lib/systemd/system/qbootctl-mark.service rmnt/etc/systemd/system/multi-user.target.wants/qbootctl-mark.service
 # Mobian watchdog: let systemd PID1 own /dev/watchdog from the very start (no gap after switch_root).
 mkdir -p rmnt/etc/systemd/system.conf.d
 printf "[Manager]\nRuntimeWatchdogSec=0\nRebootWatchdogSec=off\n" > rmnt/etc/systemd/system.conf.d/watchdog.conf

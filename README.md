@@ -22,7 +22,7 @@ contain the built images, kernel modules, or proprietary firmware blobs (see
 | USB (gadget NCM + ACM) | ✅ used as the debug channel |
 | Bluetooth (WCN3990) | ✅ `crbtfw01.tlv` + `crnv01.bin` load, `hci0` up |
 | Watchdog (qcom APSS) | ✅ handled (kernel-core auto-ping) |
-| A/B slot persistence | ⚠️ needs `qbootctl --mark-boot-successful` at boot (TODO) |
+| A/B slot persistence | ✅ `qbootctl -m` oneshot at boot (`qbootctl-mark.service`) |
 | WiFi (WCN3990 / ath10k_snoc) | ❌ pending — needs modem `mpss` rproc up + `wlanmdsp.mbn` + ath10k fw |
 | Audio | ❌ pending (TDM/amp rework — see sunfish notes) |
 | Modem / cellular | ❌ pending |
@@ -148,6 +148,13 @@ work/
 recipe/                 # Mobian debos recipe + sm7150 device target (no binaries)
 kernel-config-*.txt     # the mainline kernel .config used for the build
 ```
+
+### Binary build inputs (not in repo — gitignored)
+`patch.sh` expects these next to it in `work/`; they are device/distro blobs, not source:
+- `qbootctl` + `ld-musl-aarch64.so.1` — the pmOS aarch64 (musl) `qbootctl` and its
+  loader, bundled into the rootfs for the A/B `mark-boot-successful` oneshot. musl's
+  loader path doesn't collide with Debian's glibc, so the binary runs unmodified.
+  (Pull both from a pmOS sm7150 rootfs: `usr/bin/qbootctl`, `lib/ld-musl-aarch64.so.1`.)
 
 ## Credits / lineage
 - Kernel: [sm7150-mainline](https://github.com/sm7150-mainline/linux) fork.
