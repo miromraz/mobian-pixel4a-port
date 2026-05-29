@@ -1,0 +1,148 @@
+prepare-artifacts-dir:
+  stage: .pre
+  tags: []
+  script:
+    - ssh builder@mobian.org mkdir -p ${ARTIFACTS_ROOT}/${CI_PIPELINE_ID}
+
+cleanup-artifacts-dir:
+  interruptible: false
+  stage: .post
+  tags: []
+  script:
+    - ssh builder@mobian.org rm -rf ${ARTIFACTS_ROOT}/${CI_PIPELINE_ID}
+  when: always
+
+.save-artifacts: &save-artifacts |
+  scp ${MOBIAN_ARTIFACTS} builder@mobian.org:${ARTIFACTS_ROOT}/${CI_PIPELINE_ID}
+
+.restore-artifacts: &restore-artifacts |
+  for artifact in ${MOBIAN_ARTIFACTS}; do
+    scp builder@mobian.org:${ARTIFACTS_ROOT}/${CI_PIPELINE_ID}/${artifact} .
+  done
+
+.upload-images: &upload-images |
+  if [ "${CI_PIPELINE_SOURCE}" = "schedule" ]; then
+    IMAGES_DIR=${IMAGES_ROOT}/${MOBIAN_DEVICE_NAME}/${IMAGES_UPLOAD_SUBDIR}/weekly
+  else
+    IMAGES_DIR=${IMAGES_CI_ROOT}/$(date --date="${CI_PIPELINE_CREATED_AT}" +%Y%m%d.%H%M)
+  fi
+  ssh builder@mobian.org mkdir -p ${IMAGES_DIR}
+  for image in ${IMAGE_NAME}*; do
+    scp ${image} builder@mobian.org:${IMAGES_DIR}/
+  done
+
+.finish-images: &finish-images |
+  if [ -f "${IMAGE_NAME}.img" ]; then
+    bmaptool create "${IMAGE_NAME}.img" > "${IMAGE_NAME}.img.bmap"
+    gzip --force ${IMAGE_NAME}.img
+    sha256sum ${IMAGE_NAME}.img.gz ${IMAGE_NAME}.img.bmap > ${IMAGE_NAME}.sha256sums
+  elif [ -f ${IMAGE_NAME}.root.img ]; then
+    tar czf ${IMAGE_NAME}.tar.gz ${IMAGE_NAME}.boot-*.img ${IMAGE_NAME}.root.img
+    rm ${IMAGE_NAME}.boot-*.img ${IMAGE_NAME}.root.img
+    sha256sum ${IMAGE_NAME}.tar.gz > ${IMAGE_NAME}.sha256sums
+  fi
+
+.sign-images: &sign-images |
+  if [ -f "${MOBIAN_GPG_KEY}" ]; then
+    if [ -z "${SIGN_FILE}" ]; then SIGN_FILE="${IMAGE_NAME}.sha256sums"; fi
+    gpg --import "${MOBIAN_GPG_KEY}"
+    gpg -u "admin@mobian-project.org" --detach-sign ${SIGN_FILE}
+  fi
+
+.rootfs-generic:
+  stage: rootfs
+  script:
+    - MOBIAN_ARTIFACTS="rootfs-${ARCH}-${MOBIAN_GRAPHICAL_SHELL}-${MOBIAN_SUITE}.tar.gz"
+    - debos --scratchsize=8G
+      -t architecture:${ARCH}
+      -t environment:${MOBIAN_GRAPHICAL_SHELL}
+      -t nonfree:${MOBIAN_INCLUDE_NONFREE}
+      -t debian_suite:${DEBIAN_SUITE}
+      -t suite:${MOBIAN_SUITE}
+      -t rootfs:${MOBIAN_ARTIFACTS}
+      rootfs.yaml
+    - *save-artifacts
+
+.rootfs-installer:
+  stage: rootfs
+  script:
+    - MOBIAN_ARTIFACTS="installfs-${ARCH}-${MOBIAN_SUITE}.tar.gz"
+    - debos --scratchsize=8G
+      -t architecture:${ARCH}
+      -t suite:${MOBIAN_SUITE}
+      -t installfs:${MOBIAN_ARTIFACTS}
+      installfs.yaml
+    - *save-artifacts
+
+.devicefs:
+  stage: devicefs
+  script:
+    - MOBIAN_ARTIFACTS="rootfs-${ARCH}-${MOBIAN_GRAPHICAL_SHELL}-${MOBIAN_SUITE}.tar.gz"
+    - *restore-artifacts
+    - debos --scratchsize=8G
+      -t architecture:${ARCH}
+      -t environment:${MOBIAN_GRAPHICAL_SHELL}
+      -t device:${MOBIAN_DEVICE_NAME}
+      -t family:${MOBIAN_DEVICE_FAMILY}
+      -t nonfree:${MOBIAN_INCLUDE_NONFREE}
+      -t rootfs:${MOBIAN_ARTIFACTS}
+      -t miniramfs:${MOBIAN_MINIRAMFS}
+      rootfs-device.yaml
+    - MOBIAN_ARTIFACTS="rootfs-${MOBIAN_DEVICE_NAME}-${MOBIAN_GRAPHICAL_SHELL}.tar.gz"
+    - *save-artifacts
+    - if [ "${DEVICEFS_UPLOAD}" != "true" ]; then exit 0; fi
+    - IMAGE_NAME=rootfs-${MOBIAN_DEVICE_NAME}-${MOBIAN_GRAPHICAL_SHELL}-$(date --date="${CI_PIPELINE_CREATED_AT}" +%Y%m%d).tar.gz
+    - mv ${MOBIAN_ARTIFACTS} ${IMAGE_NAME}
+    - SIGN_FILE=${IMAGE_NAME}
+    - *sign-images
+    - IMAGES_UPLOAD_SUBDIR=rootfs
+    - *upload-images
+
+.image:
+  stage: image
+  script:
+    - MOBIAN_ARTIFACTS="rootfs-${ARCH}-${MOBIAN_GRAPHICAL_SHELL}-${MOBIAN_SUITE}.tar.gz"
+    - *restore-artifacts
+    - IMAGE_NAME=mobian-${MOBIAN_DEVICE_NAME}-${MOBIAN_GRAPHICAL_SHELL}-$(date --date="${CI_PIPELINE_CREATED_AT}" +%Y%m%d)
+    - debos --scratchsize=8G
+      -t architecture:${ARCH}
+      -t environment:${MOBIAN_GRAPHICAL_SHELL}
+      -t device:${MOBIAN_DEVICE_NAME}
+      -t family:${MOBIAN_DEVICE_FAMILY}
+      -t filesystem:${MOBIAN_FILESYSTEM}
+      -t image:${IMAGE_NAME}
+      -t imagesize:${MOBIAN_IMAGE_SIZE}
+      -t nonfree:${MOBIAN_INCLUDE_NONFREE}
+      -t partitiontable:${MOBIAN_PARTITION_TABLE}
+      -t rootfs:${MOBIAN_ARTIFACTS}
+      -t bootstart:${MOBIAN_BOOT_PARTITION_START}
+      -t miniramfs:${MOBIAN_MINIRAMFS}
+      image.yaml
+    - *finish-images
+    - *sign-images
+    - *upload-images
+
+.installer:
+  stage: installer
+  script:
+    - INSTALLFS_NAME="installfs-${ARCH}-${MOBIAN_SUITE}.tar.gz"
+    - MOBIAN_ARTIFACTS="rootfs-${MOBIAN_DEVICE_NAME}-${MOBIAN_GRAPHICAL_SHELL}.tar.gz ${INSTALLFS_NAME}"
+    - *restore-artifacts
+    - IMAGE_NAME=mobian-installer-${MOBIAN_DEVICE_NAME}-${MOBIAN_GRAPHICAL_SHELL}-$(date --date="${CI_PIPELINE_CREATED_AT}" +%Y%m%d)
+    - zcat "rootfs-${MOBIAN_DEVICE_NAME}-${MOBIAN_GRAPHICAL_SHELL}.tar.gz" | tar2sqfs "rootfs-${MOBIAN_DEVICE_NAME}-${MOBIAN_GRAPHICAL_SHELL}.sqfs" > /dev/null 2>&1
+    - debos --scratchsize=8G
+      -t architecture:${ARCH}
+      -t environment:${MOBIAN_GRAPHICAL_SHELL}
+      -t device:${MOBIAN_DEVICE_NAME}
+      -t family:${MOBIAN_DEVICE_FAMILY}
+      -t nonfree:${MOBIAN_INCLUDE_NONFREE}
+      -t filesystem:${MOBIAN_FILESYSTEM}
+      -t image:${IMAGE_NAME}
+      -t installfs:${INSTALLFS_NAME}
+      -t partitiontable:${MOBIAN_PARTITION_TABLE}
+      -t bootstart:${MOBIAN_BOOT_PARTITION_START}
+      installer.yaml
+    - *finish-images
+    - *sign-images
+    - IMAGES_UPLOAD_SUBDIR=installer
+    - *upload-images

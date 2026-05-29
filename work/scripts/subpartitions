@@ -1,0 +1,62 @@
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+. /scripts/functions
+k() { echo "subpart: $*" > /dev/kmsg 2>/dev/null; }
+
+# (1) Load qcom_wdt so the kernel watchdog CORE adopts the bootloader-armed watchdog
+# and auto-pings it forever (CONFIG_WATCHDOG_OPEN_TIMEOUT=0). Do NOT open /dev/watchdog
+# from userspace -- opening it makes the core stop auto-pinging and hand off the job.
+modprobe qcom_wdt 2>/dev/null || modprobe qcom-wdt 2>/dev/null || true
+
+# (2) USB gadget: NCM net (172.16.42.1) + ACM serial + shell
+CFG=/sys/kernel/config/usb_gadget
+modprobe libcomposite 2>/dev/null || true
+[ -d "$CFG" ] || mount -t configfs none /sys/kernel/config 2>/dev/null || true
+mkdir -p /dev/pts; mount -t devpts devpts /dev/pts 2>/dev/null || true
+UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
+if [ -n "$UDC" ] && [ -d "$CFG" ]; then
+  G=$CFG/g1
+  mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" "$G/functions/ncm.usb0" "$G/functions/acm.usb0" 2>/dev/null
+  echo 0x18d1 > "$G/idVendor" 2>/dev/null; echo 0xd001 > "$G/idProduct" 2>/dev/null
+  echo sunfish-debug > "$G/strings/0x409/product" 2>/dev/null
+  echo debug > "$G/configs/c.1/strings/0x409/configuration" 2>/dev/null
+  ln -sf "$G/functions/ncm.usb0" "$G/configs/c.1/ncm.usb0" 2>/dev/null
+  ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0" 2>/dev/null
+  echo "$UDC" > "$G/UDC" 2>/dev/null
+  for n in $(seq 1 10); do [ -e /sys/class/net/usb0 ] && break; sleep 0.5; done
+  ip addr add 172.16.42.1/24 dev usb0 2>/dev/null || ifconfig usb0 172.16.42.1 netmask 255.255.255.0 2>/dev/null
+  ip link set usb0 up 2>/dev/null || ifconfig usb0 up 2>/dev/null
+  for j in $(seq 1 30); do [ -e /dev/ttyGS0 ] && break; sleep 0.2; done
+fi
+
+# (3) Expose nested root via OFFSET loop (NO -P, NO --sector-size: avoids the panic/stall).
+LOSETUP=/sbin/losetup.real
+[ -x "$LOSETUP" ] || LOSETUP=/usr/sbin/losetup.real
+UD=/dev/disk/by-partlabel/userdata
+i=0; while [ ! -e "$UD" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+[ -e "$UD" ] || UD=$(blkid -t PARTLABEL=userdata -o device 2>/dev/null | head -1)
+ROOT_OFFSET=537919488   # mobian_root start: sector 131328 * 4096
+LD=$("$LOSETUP" -o "$ROOT_OFFSET" --show -f "$UD" 2>&1); rc=$?
+k "offsetloop rc=$rc ld=$LD"
+udevadm trigger 2>/dev/null || true; udevadm settle 2>/dev/null || true
+k "rootloop blkid: $(blkid "$LD" 2>&1)"
+
+# (4) PUSH pstore (PREVIOUS boot's console = the reboot cause). FOREGROUND, bounded
+# ~27s so the USB-net link has time to come up + retry. Safe: kernel core auto-pings
+# the watchdog while nothing has /dev/watchdog open, so blocking here will NOT reboot.
+mkdir -p /sys/fs/pstore 2>/dev/null; mount -t pstore pstore /sys/fs/pstore 2>/dev/null
+DIAG=/tmp/diag.txt
+{ echo "==== diag uptime=$(cat /proc/uptime 2>/dev/null) ===="; uname -a
+  echo "cmdline: $(cat /proc/cmdline)"
+  echo "offsetloop rc=$rc ld=$LD"; blkid "$LD" 2>&1
+  echo "== pstore files (PREVIOUS boot) =="; ls -l /sys/fs/pstore 2>&1
+  for f in /sys/fs/pstore/*; do [ -f "$f" ] && { echo "---- $f ----"; cat "$f" 2>&1; echo; }; done
+  echo "== ramoops/reboot markers this boot =="; dmesg 2>/dev/null | grep -iE 'pstore|ramoops|panic|watchdog|reboot|regulator' | tail -20
+  echo "==== end ===="
+} > "$DIAG" 2>&1
+for n in $(seq 1 9); do
+  nc 172.16.42.2 9999 < "$DIAG" 2>/dev/null && break
+  sleep 3
+done

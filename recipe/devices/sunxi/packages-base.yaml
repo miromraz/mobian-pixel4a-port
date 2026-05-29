@@ -1,0 +1,12 @@
+{{- $architecture := or .architecture "arm64" -}}
+{{- $device := or .device "pinephone" }}
+
+architecture: {{ $architecture }}
+
+actions:
+  - action: apt
+    recommends: false
+    description: Install device-specific base packages
+    packages:
+      - {{ $device }}-support
+      - rsync

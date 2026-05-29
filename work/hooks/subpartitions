@@ -1,0 +1,10 @@
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+. /usr/share/initramfs-tools/hook-functions
+# Copy the REAL util-linux losetup to a NEW name. copy_exec skips if the target
+# already exists, and busybox owns /sbin/losetup -> so copy straight to a name
+# busybox never creates. This is the one with --sector-size (needed for the
+# 4096-byte-sector nested GPT).
+copy_exec /usr/sbin/losetup /sbin/losetup.real

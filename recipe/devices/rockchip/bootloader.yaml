@@ -1,0 +1,9 @@
+{{- $architecture := or .architecture "arm64" -}}
+{{- $device := or .device "pinephonepro" }}
+
+architecture: {{ $architecture }}
+
+actions:
+  # Nothing to be done, but we need an action anyway
+  - action: run
+    command: true

@@ -1,0 +1,7 @@
+*.img*
+*.miniramfs
+*.sha256sums*
+*.simg
+*.sqfs
+*.tar.gz
+overlays/ssh/authorized_keys

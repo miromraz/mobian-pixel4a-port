@@ -1,0 +1,161 @@
+include:
+  - .gitlab-ci/job-definitions.yml
+  - .gitlab-ci/global-declarations.yml
+  - .gitlab-ci/devices.yml
+
+rootfs-amd64-phosh:
+  extends:
+    - .rootfs-generic
+    - .arch-amd64
+    - .shell-phosh
+
+rootfs-arm64-phosh:
+  extends:
+    - .rootfs-generic
+    - .arch-arm64
+    - .shell-phosh
+
+rootfs-arm64-phosh-staging:
+  variables:
+    MOBIAN_SUITE: "staging"
+  extends:
+    - .rootfs-generic
+    - .arch-arm64
+    - .shell-phosh
+
+installfs-arm64:
+  extends:
+    - .rootfs-installer
+    - .arch-arm64
+
+installfs-arm64-staging:
+  variables:
+    MOBIAN_SUITE: "staging"
+  extends:
+    - .rootfs-installer
+    - .arch-arm64
+
+devicefs-pinephone-phosh:
+  extends:
+    - .devicefs
+    - .device-pinephone
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh
+
+devicefs-pinephonepro-phosh:
+  variables:
+    MOBIAN_MINIRAMFS: "true"
+  extends:
+    - .devicefs
+    - .device-pinephonepro
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh-staging
+
+devicefs-pinetab-phosh:
+  extends:
+    - .devicefs
+    - .device-pinetab
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh
+
+image-pinephone-phosh:
+  extends:
+    - .image
+    - .device-pinephone
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh
+
+image-pinephonepro-phosh:
+  extends:
+    - .image
+    - .device-pinephonepro
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh-staging
+
+image-pinetab-phosh:
+  extends:
+    - .image
+    - .device-pinetab
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh
+
+image-librem5-phosh:
+  extends:
+    - .image
+    - .device-librem5
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh
+
+image-oneplus6-phosh:
+  extends:
+    - .image
+    - .device-oneplus6
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh-staging
+
+image-pocof1-phosh:
+  extends:
+    - .image
+    - .device-pocof1
+    - .shell-phosh
+  needs:
+    - rootfs-arm64-phosh-staging
+
+image-surfacepro3-phosh:
+  extends:
+    - .image
+    - .device-surfacepro3
+    - .shell-phosh
+  needs:
+    - rootfs-amd64-phosh
+
+image-amd64-uefi-phosh:
+  extends:
+    - .image
+    - .device-amd64-uefi
+    - .shell-phosh
+  needs:
+    - rootfs-amd64-phosh
+
+image-amd64-pc-phosh:
+  extends:
+    - .image
+    - .device-amd64-pc
+    - .shell-phosh
+  needs:
+    - rootfs-amd64-phosh
+
+installer-pinephone-phosh:
+  extends:
+    - .installer
+    - .device-pinephone
+    - .shell-phosh
+  needs:
+    - installfs-arm64
+    - devicefs-pinephone-phosh
+
+installer-pinephonepro-phosh:
+  extends:
+    - .installer
+    - .device-pinephonepro
+    - .shell-phosh
+  needs:
+    - installfs-arm64-staging
+    - devicefs-pinephonepro-phosh
+
+installer-pinetab-phosh:
+  extends:
+    - .installer
+    - .device-pinetab
+    - .shell-phosh
+  needs:
+    - installfs-arm64
+    - devicefs-pinetab-phosh

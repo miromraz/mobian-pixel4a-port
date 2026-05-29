@@ -1,0 +1,15 @@
+# Build artifacts and proprietary/device blobs — never commit (reproducible or extracted from device)
+*.simg
+*.img
+*.mbn
+*.ko
+*.fw
+*.bin
+*.tlv
+*.b[0-9]*
+*.gz
+*.zip
+*.tar
+work/*.simg
+work/output/
+recipe/output/

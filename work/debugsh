@@ -1,0 +1,21 @@
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+CFG=/sys/kernel/config/usb_gadget
+modprobe libcomposite 2>/dev/null || true
+[ -d "$CFG" ] || mount -t configfs none /sys/kernel/config 2>/dev/null || true
+mkdir -p /dev/pts; mount -t devpts devpts /dev/pts 2>/dev/null || true
+UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
+if [ -n "$UDC" ] && [ -d "$CFG" ]; then
+  G=$CFG/g1
+  mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" "$G/functions/acm.usb0" 2>/dev/null
+  echo 0x18d1 > "$G/idVendor" 2>/dev/null
+  echo 0xd001 > "$G/idProduct" 2>/dev/null
+  echo sunfish-debug > "$G/strings/0x409/product" 2>/dev/null
+  echo debug > "$G/configs/c.1/strings/0x409/configuration" 2>/dev/null
+  ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0" 2>/dev/null
+  echo "$UDC" > "$G/UDC" 2>/dev/null
+  for j in $(seq 1 30); do [ -e /dev/ttyGS0 ] && break; sleep 0.2; done
+  [ -e /dev/ttyGS0 ] && ( while : ; do setsid sh -i <>/dev/ttyGS0 >&0 2>&0; sleep 1; done ) &
+fi

@@ -1,0 +1,13 @@
+{{- $architecture := or .architecture "arm64" -}}
+
+architecture: {{ $architecture }}
+
+actions:
+  - action: apt
+    recommends: false
+    description: Install packages for full disk encryption
+    packages:
+      - cryptsetup
+      - cryptsetup-initramfs
+      - libblockdev-crypto2
+      - osk-sdl

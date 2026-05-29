@@ -1,0 +1,51 @@
+image: registry.gitlab.com/mobian1/docker-images/mobian-image-ci-amd64:latest
+
+stages:
+  - rootfs
+  - devicefs
+  - image
+  - installer
+
+default:
+  retry: 1
+  interruptible: true
+  before_script:
+    - chmod 0400 "$MOBIAN_SSH_KEY"
+    - eval $(ssh-agent -s)
+    - ssh-add "$MOBIAN_SSH_KEY"
+  tags:
+    - kvm
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_PROJECT_ROOT_NAMESPACE == "mobian1"
+      when: always
+    - when: never
+
+variables:
+  DEBIAN_SUITE: "bookworm"
+  MOBIAN_SUITE: "bookworm"
+  MOBIAN_BOOT_PARTITION_START: "8MiB"
+  MOBIAN_FILESYSTEM: "ext4"
+  MOBIAN_IMAGE_SIZE: "6GB"
+  MOBIAN_INCLUDE_NONFREE: "false"
+  MOBIAN_MINIRAMFS: "false"
+  MOBIAN_PARTITION_TABLE: "mbr"
+  ARTIFACTS_ROOT: /srv/builder/images
+  DEVICEFS_UPLOAD: "false"
+  IMAGES_ROOT: /var/www/images
+  IMAGES_CI_ROOT: /var/www/ci-images
+
+.arch-amd64:
+  variables:
+    ARCH: amd64
+
+.arch-arm64:
+  variables:
+    ARCH: arm64
+
+.shell-phosh:
+  variables:
+    MOBIAN_GRAPHICAL_SHELL: "phosh"

@@ -1,0 +1,26 @@
+{{- $architecture := or .architecture "arm64" -}}
+{{- $device := or .device "google-sunfish" }}
+
+architecture: {{ $architecture }}
+
+actions:
+  - action: apt
+    recommends: false
+    description: Install SM7150 base runtime (boot image + initramfs tooling)
+    packages:
+      - abootimg
+      - initramfs-tools
+      - linux-base
+
+  # No `<device>-support` package exists in Mobian's repo for sunfish yet, and
+  # the host is Arch (can't run bindeb-pkg), so the natively cross-built kernel
+  # is injected as raw artifacts: overlay-{{ $device }}/ carries /boot/vmlinuz-*,
+  # /usr/lib/modules/*, /usr/lib/linux-image-*/ (dtb) and /usr/lib/firmware.
+  - action: overlay
+    description: Drop the cross-built kernel, modules, dtb and SoC firmware
+    source: overlay-{{ $device }}
+
+  - action: run
+    chroot: true
+    description: depmod + build initramfs for the injected kernel
+    script: install-kernel.sh

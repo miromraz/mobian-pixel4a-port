@@ -1,0 +1,12 @@
+[Unit]
+Description=watchdog-kick daemon
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=sysinit.target
+[Service]
+ExecStartPre=-/sbin/modprobe qcom_wdt
+ExecStart=/usr/sbin/watchdog-kick
+Type=simple
+Restart=always
+[Install]
+WantedBy=sysinit.target

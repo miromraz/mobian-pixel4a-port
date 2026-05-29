@@ -1,0 +1,75 @@
+.device-pinephone:
+  extends:
+    - .arch-arm64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "sunxi"
+    MOBIAN_DEVICE_NAME: "pinephone"
+    DEVICEFS_UPLOAD: "true"
+
+.device-pinephonepro:
+  extends:
+    - .arch-arm64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "rockchip"
+    MOBIAN_DEVICE_NAME: "pinephonepro"
+    MOBIAN_INCLUDE_NONFREE: "true"
+    MOBIAN_SUITE: "staging"
+
+.device-pinetab:
+  extends:
+    - .arch-arm64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "sunxi"
+    MOBIAN_DEVICE_NAME: "pinetab"
+
+.device-librem5:
+  extends:
+    - .arch-arm64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "librem5"
+    MOBIAN_DEVICE_NAME: "librem5"
+    MOBIAN_BOOT_PARTITION_START: "8MiB"
+
+.device-oneplus6:
+  extends:
+    - .arch-arm64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "sdm845"
+    MOBIAN_DEVICE_NAME: "oneplus6"
+    MOBIAN_SUITE: "staging"
+    MOBIAN_INCLUDE_NONFREE: "true"
+
+.device-pocof1:
+  extends:
+    - .arch-arm64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "sdm845"
+    MOBIAN_DEVICE_NAME: "pocof1"
+    MOBIAN_SUITE: "staging"
+    MOBIAN_INCLUDE_NONFREE: "true"
+
+.device-surfacepro3:
+  extends:
+    - .arch-amd64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "amd64"
+    MOBIAN_DEVICE_NAME: "surfacepro3"
+    MOBIAN_INCLUDE_NONFREE: "true"
+    MOBIAN_PARTITION_TABLE: "gpt"
+
+.device-amd64-pc:
+  extends:
+    - .arch-amd64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "amd64"
+    MOBIAN_DEVICE_NAME: "pc"
+    MOBIAN_IMAGE_SIZE: "20GB"
+
+.device-amd64-uefi:
+  extends:
+    - .arch-amd64
+  variables:
+    MOBIAN_DEVICE_FAMILY: "amd64"
+    MOBIAN_DEVICE_NAME: "efi"
+    MOBIAN_IMAGE_SIZE: "20GB"
+    MOBIAN_PARTITION_TABLE: "gpt"

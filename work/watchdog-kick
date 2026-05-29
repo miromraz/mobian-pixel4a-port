@@ -1,0 +1,5 @@
+#!/bin/sh
+while true; do
+  for wd in /dev/watchdog*; do [ -c "$wd" ] && echo X > "$wd"; done
+  [ -z "$1" ] && sleep 10 || exit
+done
