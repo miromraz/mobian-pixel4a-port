@@ -155,6 +155,9 @@ kernel-config-*.txt     # the mainline kernel .config used for the build
   loader, bundled into the rootfs for the A/B `mark-boot-successful` oneshot. musl's
   loader path doesn't collide with Debian's glibc, so the binary runs unmodified.
   (Pull both from a pmOS sm7150 rootfs: `usr/bin/qbootctl`, `lib/ld-musl-aarch64.so.1`.)
+- `ath10k-WCN3990-board-2.bin` + `ath10k-WCN3990-firmware-5.bin` — ath10k WCN3990
+  runtime firmware copied into the rootfs. `board-2.bin` must carry
+  `variant=google_sunfish`; `firmware-5.bin` is the 60-byte QCA-ATH10K API header.
 
 ## Credits / lineage
 - Kernel: [sm7150-mainline](https://github.com/sm7150-mainline/linux) fork.

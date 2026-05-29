@@ -39,6 +39,11 @@ WantedBy=multi-user.target
 UNIT
 mkdir -p rmnt/etc/systemd/system/multi-user.target.wants
 ln -sf /usr/lib/systemd/system/qbootctl-mark.service rmnt/etc/systemd/system/multi-user.target.wants/qbootctl-mark.service
+# ath10k WCN3990 runtime firmware (passive — only used once ath10k_snoc loads, after the
+# mpss modem rproc is up). board-2.bin carries variant=google_sunfish; firmware-5.bin is the
+# 60-byte QCA-ATH10K API header (real WLAN fw = wlanmdsp.mbn, already in /lib/firmware/qcom).
+install -Dm644 ath10k-WCN3990-board-2.bin    rmnt/usr/lib/firmware/ath10k/WCN3990/hw1.0/board-2.bin
+install -Dm644 ath10k-WCN3990-firmware-5.bin rmnt/usr/lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin
 # Mobian watchdog: let systemd PID1 own /dev/watchdog from the very start (no gap after switch_root).
 mkdir -p rmnt/etc/systemd/system.conf.d
 printf "[Manager]\nRuntimeWatchdogSec=0\nRebootWatchdogSec=off\n" > rmnt/etc/systemd/system.conf.d/watchdog.conf
