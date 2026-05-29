@@ -23,7 +23,7 @@ contain the built images, kernel modules, or proprietary firmware blobs (see
 | Bluetooth (WCN3990) | ✅ `crbtfw01.tlv` + `crnv01.bin` load, `hci0` up |
 | Watchdog (qcom APSS) | ✅ handled (kernel-core auto-ping) |
 | A/B slot persistence | ✅ `qbootctl -m` oneshot at boot (`qbootctl-mark.service`) |
-| WiFi (WCN3990 / ath10k_snoc) | ❌ pending — needs modem `mpss` rproc up + `wlanmdsp.mbn` + ath10k fw |
+| WiFi (WCN3990 / ath10k_snoc) | ❌ pending — fw chain complete in overlay (`board-2.bin` w/ `variant=google_sunfish` + `firmware-5.bin` + `wlanmdsp.mbn`); remaining = bring the modem `mpss` rproc up (owns `wlan_msa_mem`), then `ath10k_snoc`. Modules don't auto-probe yet — needs on-device `modprobe qcom_q6v5_mss` + dmesg debug |
 | Audio | ❌ pending (TDM/amp rework — see sunfish notes) |
 | Modem / cellular | ❌ pending |
 
