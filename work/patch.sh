@@ -67,6 +67,9 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
   apt-get install -y --no-install-recommends openssh-server
   ssh-keygen -A                 # generate host keys (postinst may skip under qemu)
   systemctl enable ssh
+  # qcom modem/WiFi/BT userspace: qrtr-ns + rmtfs (bring libqrtr1 too, needed by
+  # the prebuilt tqftpserv/pd-mapper). Their services are enabled by the packages.
+  apt-get install -y --no-install-recommends qrtr-tools rmtfs
 '
 rm -f rmnt/etc/resolv.conf
 [ -n "$RESOLV_LINK" ] && ln -s "$RESOLV_LINK" rmnt/etc/resolv.conf
@@ -78,6 +81,28 @@ if [ -f ssh-authorized-keys ]; then
   printf 'mobian ALL=(ALL) NOPASSWD:ALL\n' > rmnt/etc/sudoers.d/90-mobian-nopasswd
   chmod 440 rmnt/etc/sudoers.d/90-mobian-nopasswd
 fi
+
+# --- WCN3990 WiFi + Bluetooth bringup (qcom mainline userspace, replicating pmOS) ---
+# qrtr-ns + rmtfs come from apt above; tqftpserv + pd-mapper are prebuilt (built on-device
+# against Debian libs: tqftpserv->libqrtr+libzstd, pd-mapper->libqrtr+liblzma).
+if [ -d wcn ]; then
+  install -Dm755 wcn/bin/tqftpserv  rmnt/usr/local/bin/tqftpserv
+  install -Dm755 wcn/bin/pd-mapper  rmnt/usr/local/bin/pd-mapper
+  install -Dm755 wcn/sbin/wcn-wifi-bringup.sh rmnt/usr/local/sbin/wcn-wifi-bringup.sh
+  install -Dm755 wcn/sbin/wcn-bt-addr.sh      rmnt/usr/local/sbin/wcn-bt-addr.sh
+  for u in tqftpserv pd-mapper wcn-wifi wcn-bt; do
+    install -Dm644 "wcn/units/$u.service" "rmnt/etc/systemd/system/$u.service"
+    ln -sf "/etc/systemd/system/$u.service" \
+      "rmnt/etc/systemd/system/multi-user.target.wants/$u.service"
+  done
+  # ath10k_snoc must probe ONCE, after WLFW is up (else "host capability rejected: 90")
+  echo 'blacklist ath10k_snoc' > rmnt/etc/modprobe.d/ath10k-snoc-blacklist.conf
+  # pd-mapper + fw loads need the device firmware dir on the search path
+  echo 'w /sys/module/firmware_class/parameters/path - - - - /lib/firmware/qcom/sm7150/google/sunfish' \
+    > rmnt/etc/tmpfiles.d/qcom-fw-path.conf
+fi
+# never auto-suspend: Phosh idle-suspend tears down the USB gadget (looks like a shutdown)
+for t in sleep suspend hibernate hybrid-sleep; do ln -sf /dev/null "rmnt/etc/systemd/system/$t.target"; done
 
 chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/sbin/update-initramfs -u -k "$KVER"
 
@@ -110,6 +135,17 @@ sed -i 's#\( watchdog.open_timeout=0 loglevel=7 ignore_loglevel\)\{1,\}# watchdo
 sed -i "s#root=PARTLABEL=mobian_root#root=UUID=$RUUID#" emnt/loader/entries/mobian.conf
 sed -i "s#root=UUID=[^ ]* rw#root=UUID=$RUUID rw#" emnt/loader/entries/mobian.conf
 echo "loader options now:"; grep '^options' emnt/loader/entries/mobian.conf
+# Bluetooth: WCN3990 has no BD address in NVM, so hci0 comes up unconfigured (DOWN RAW).
+# Inject a stable locally-administered local-bd-address into the boot dtb (loaded via the
+# loader 'devicetree' line) so hci_qca configures hci0 at probe. Bytes are little-endian
+# (= display 02:91:00:5f:00:01). wcn-bt.service remains as a runtime fallback.
+BT_NODE=/soc@0/geniqup@8c0000/serial@88c000/bluetooth
+if fdtget emnt/sm7150-google-sunfish.dtb "$BT_NODE" compatible >/dev/null 2>&1; then
+  fdtput -t bx emnt/sm7150-google-sunfish.dtb "$BT_NODE" local-bd-address 0x01 0x00 0x5f 0x00 0x91 0x02
+  echo "dtb local-bd-address: $(fdtget -t bx emnt/sm7150-google-sunfish.dtb "$BT_NODE" local-bd-address 2>&1)"
+else
+  echo "WARN: bluetooth node not found in dtb, skipping local-bd-address"
+fi
 sync
 umount emnt
 losetup -d "$LOOP"
