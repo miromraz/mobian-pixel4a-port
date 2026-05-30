@@ -1,0 +1,10 @@
+[Unit]
+Description=Bring up WCN3990 WiFi (wait for WLFW, rebind ath10k_snoc)
+After=rmtfs.service pd-mapper.service tqftpserv.service qrtr-ns.service
+Wants=rmtfs.service pd-mapper.service tqftpserv.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/wcn-wifi-bringup.sh
+[Install]
+WantedBy=multi-user.target

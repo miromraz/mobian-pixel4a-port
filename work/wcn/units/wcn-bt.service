@@ -1,0 +1,10 @@
+[Unit]
+Description=Set WCN3990 Bluetooth public address (no NVM bdaddr)
+After=bluetooth.service wcn-wifi.service
+Wants=bluetooth.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/wcn-bt-addr.sh
+[Install]
+WantedBy=multi-user.target

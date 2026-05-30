@@ -20,12 +20,22 @@ contain the built images, kernel modules, or proprietary firmware blobs (see
 | Boot to Phosh | ✅ stable (zero resets after the IPA fix) |
 | Display / GPU (a630, DPU) | ✅ `a630_sqe.fw` + `a630_gmu.bin` load, DPU up |
 | USB (gadget NCM + ACM) | ✅ used as the debug channel |
-| Bluetooth (WCN3990) | ✅ `crbtfw01.tlv` + `crnv01.bin` load, `hci0` up |
+| Bluetooth (WCN3990) | ✅ `hci0` UP RUNNING — BD address from DT `local-bd-address` (WCN3990 has none in NVM), injected into the boot dtb by `patch.sh` |
 | Watchdog (qcom APSS) | ✅ handled (kernel-core auto-ping) |
 | A/B slot persistence | ✅ `qbootctl -m` oneshot at boot (`qbootctl-mark.service`) |
-| WiFi (WCN3990 / ath10k_snoc) | ❌ pending — fw chain complete in overlay (`board-2.bin` w/ `variant=google_sunfish` + `firmware-5.bin` + `wlanmdsp.mbn`); remaining = bring the modem `mpss` rproc up (owns `wlan_msa_mem`), then `ath10k_snoc`. Modules don't auto-probe yet — needs on-device `modprobe qcom_q6v5_mss` + dmesg debug |
+| WiFi (WCN3990 / ath10k_snoc) | ✅ `wlan0` scans 2.4/5 GHz — qcom QMI stack (`qrtr-ns` + `tqftpserv` + `rmtfs` + `pd-mapper`) starts the WLAN PD, then single `modprobe ath10k_snoc` after WLFW |
 | Audio | ❌ pending (TDM/amp rework — see sunfish notes) |
 | Modem / cellular | ❌ pending |
+
+### WiFi + Bluetooth bringup (WCN3990 combo chip, replicating pmOS)
+
+Wired in `work/wcn/` + `patch.sh`. Both sit on the shared WCN3990:
+- **`qrtr-ns` + `rmtfs`** (apt) — QMI name service + modem remote filesystem (`rmtfs` also starts the modem rproc).
+- **`tqftpserv`** ([linux-msm/tqftpserv](https://github.com/linux-msm/tqftpserv)) — TrustZone TFTP server; **without it the WLAN protection-domain never starts** (no WLFW QMI service).
+- **`pd-mapper`** ([linux-msm/pd-mapper](https://github.com/linux-msm/pd-mapper)) — registers the servreg PD domains (needs the firmware path pointed at the sunfish dir to find the `.jsn` files).
+- **`wcn-wifi.service`** — after WLFW appears, a single `modprobe ath10k_snoc` (it's blacklisted from autoload; probing before the WLAN PD is ready wedges it with `host capability request rejected: 90`).
+- **Bluetooth** — `patch.sh` injects a stable `local-bd-address` into the boot dtb's bluetooth node via `fdtput`, so `hci_qca` configures `hci0` at probe. `wcn-bt.service` is a runtime fallback that early-exits when the DT already brought `hci0` up.
+- `tqftpserv`/`pd-mapper` binaries are built on-device and gitignored (`work/wcn/bin/`).
 
 ---
 

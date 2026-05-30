@@ -1,0 +1,11 @@
+[Unit]
+Description=Qualcomm TrustZone TFTP server (AF_QIPCRTR)
+After=qrtr-ns.service
+Wants=qrtr-ns.service
+Before=rmtfs.service
+[Service]
+ExecStart=/usr/local/bin/tqftpserv
+Restart=on-failure
+RestartSec=1
+[Install]
+WantedBy=multi-user.target

@@ -15,3 +15,5 @@ work/output/
 recipe/output/
 # personal SSH pubkey baked into the dev image — not a repo artifact
 ssh-authorized-keys
+# WCN3990 daemons built on-device (tqftpserv, pd-mapper)
+work/wcn/bin/
