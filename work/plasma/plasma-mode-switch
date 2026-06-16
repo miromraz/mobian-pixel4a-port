@@ -1,0 +1,36 @@
+#!/bin/sh
+# Flip the SDDM autologin session between Plasma Mobile and Plasma Desktop,
+# then restart SDDM. Runs as root (via pkexec).
+set -eu
+
+CONF=/etc/sddm.conf.d/zz-autologin.conf
+SESS_DIR=/usr/share/wayland-sessions
+MOBILE=plasma-mobile.desktop
+DESKTOP=plasma.desktop
+
+current=$(sed -n 's/^Session=//p' "$CONF" 2>/dev/null | head -n1)
+
+case "$current" in
+    "$MOBILE")  target=$DESKTOP ;;
+    "$DESKTOP") target=$MOBILE ;;
+    *)          target=$MOBILE ;;   # unknown/empty -> safe default
+esac
+
+if [ ! -f "$SESS_DIR/$target" ]; then
+    echo "plasma-mode-switch: target session '$target' not found in $SESS_DIR; aborting (not restarting sddm)" \
+        | systemd-cat -t plasma-mode-switch -p err
+    exit 1
+fi
+
+mkdir -p "$(dirname "$CONF")"
+cat > "$CONF" <<EOF
+[Autologin]
+User=mobian
+Session=$target
+
+[General]
+DisplayServer=wayland
+EOF
+
+logger -t plasma-mode-switch "switching session $current -> $target; restarting sddm"
+exec systemctl restart sddm
