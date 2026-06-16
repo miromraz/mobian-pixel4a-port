@@ -1,0 +1,4 @@
+# System default: enable Maliit keyboard keypress haptics on Plasma Mobile.
+# Requires hfd-service + libqt5feedback5-hfd (the Qt5Feedback vibration backend).
+[org/maliit/keyboard/maliit]
+key-press-feedback=true

@@ -26,7 +26,26 @@ apps show blank pages later, re-run the audit:
       | grep '^qml6-module-' | sort -u \
       | while read m; do dpkg -s "$m" >/dev/null 2>&1 || echo "$m"; done
 
-## Open issue (not yet fixed): keyboard haptics
-Plasma Mobile/KDE does NOT use feedbackd (Phosh did). Vibrator HW works
-(event3 = drv2624:haptics). Maliit keyboard haptics go through Qt feedback, not
-feedbackd — currently no vibration on keypress. Needs further investigation.
+## Keyboard haptics (SOLVED)
+Debian's maliit-keyboard uses **Qt5Feedback**, whose only stock backend (mmk =
+QFeedbackFileInterface) plays SOUND, not vibration — so keypress haptics were dead
+(Phosh used squeekboard+feedbackd; that path is gone). The vibrator HW is fine
+(event3 = drv2624:haptics). Fix = the hfd haptic backend chain:
+
+  maliit (key-press-feedback=true) -> Qt5Feedback -> libqtfeedback_hfd
+    -> hfd-service (VibratorFF impl) -> /dev/input/event3 (drv2624)
+
+Required (now in include/packages-plasma.yaml):
+- `hfd-service`            (Lomiri Hardware Feedback Daemon; has a VibratorFF impl)
+- `libqt5feedback5-hfd`    (the Qt5Feedback vibration backend; mmk only does sound)
+  (pulls libdeviceinfo0, libyaml-cpp0.8)
+
+Config (now in patch.sh via dconf system db, work/plasma/dconf-maliit-haptics):
+- `org.maliit.keyboard.maliit key-press-feedback = true`
+
+No per-user setup needed for the permission gate: hfd-service ships an AccountsService
+extension (com.lomiri.hfd.AccountsService.Settings) whose `AllowGeneralVibration`
+defaults TRUE; accounts-daemon loads it at boot. Verified persistent across reboot.
+
+NOTE: the feedbackd theme in work/feedbackd/ is a SEPARATE path — it only helps
+libfeedback apps (gnome-calls, notifications), NOT the maliit keyboard.

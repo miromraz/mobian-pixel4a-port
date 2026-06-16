@@ -168,6 +168,21 @@ fi
 if [ -d feedbackd ]; then
   install -Dm644 "feedbackd/google,sunfish.json" "rmnt/usr/share/feedbackd/themes/google,sunfish.json"
 fi
+# Maliit keyboard keypress haptics: ship the gsetting default key-press-feedback=true via
+# the dconf system db. The vibration itself needs hfd-service + libqt5feedback5-hfd (from
+# the recipe) which provide the Qt5Feedback haptic backend (VibratorFF -> drv2624);
+# AccountsService AllowGeneralVibration defaults true once accounts-daemon loads hfd's
+# extension at boot.
+if [ -d plasma ] && [ -f plasma/dconf-maliit-haptics ]; then
+  install -Dm644 plasma/dconf-maliit-haptics rmnt/etc/dconf/db/local.d/00-plasma-mobile-haptics
+  mkdir -p rmnt/etc/dconf/profile
+  if [ ! -f rmnt/etc/dconf/profile/user ]; then
+    printf 'user-db:user\nsystem-db:local\n' > rmnt/etc/dconf/profile/user
+  elif ! grep -q '^system-db:local$' rmnt/etc/dconf/profile/user; then
+    echo 'system-db:local' >> rmnt/etc/dconf/profile/user
+  fi
+  chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin dconf update 2>/dev/null || true
+fi
 
 # never auto-suspend: Phosh idle-suspend tears down the USB gadget (looks like a shutdown)
 for t in sleep suspend hibernate hybrid-sleep; do ln -sf /dev/null "rmnt/etc/systemd/system/$t.target"; done
