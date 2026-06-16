@@ -234,6 +234,15 @@ if [ -d plasma ] && [ -f plasma/dconf-maliit-haptics ]; then
   fi
   chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin dconf update 2>/dev/null || true
 fi
+# maliit-keyboard ships a buggy ExtendedKeysSelector.qml (the long-press accent popup): it
+# references a `Theme` object that this Debian build does not provide anywhere (used in no
+# other maliit qml, no Theme module), so the popup throws "ReferenceError: Theme is not
+# defined" and renders glitched. Hardcode the two colours (Breeze: highlight blue / white)
+# so the popup renders. `@`-delimited sed because the colour value contains `#`.
+EKS=rmnt/usr/lib/aarch64-linux-gnu/maliit/keyboard2/qml/keys/ExtendedKeysSelector.qml
+if [ -f "$EKS" ]; then
+  sed -i 's@color: key.highlight ? Theme.selectionColor : Theme.fontColor@color: key.highlight ? "#3daee9" : "white"@' "$EKS"
+fi
 
 # never auto-suspend: Phosh idle-suspend tears down the USB gadget (looks like a shutdown)
 for t in sleep suspend hibernate hybrid-sleep; do ln -sf /dev/null "rmnt/etc/systemd/system/$t.target"; done
