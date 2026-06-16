@@ -1,0 +1,22 @@
+{{- $architecture := or .architecture "arm64" -}}
+
+architecture: {{ $architecture }}
+
+actions:
+  - action: apt
+    recommends: false
+    description: Install Plasma Mobile + Plasma Desktop packages
+    packages:
+      - plasma-mobile
+      - plasma-desktop
+      - sddm
+      # pkexec is a separate package in Debian 13; needed by the Switch Mode launcher
+      - pkexec
+      # Without the kirigami-addons formcard QML module (a stripped recommends),
+      # the Plasma Mobile first-run wizard pages render blank. Pulls -datetime.
+      - qml6-module-org-kde-kirigamiaddons-formcard
+
+  - action: run
+    description: Disable getty in the Plasma environment
+    chroot: true
+    command: systemctl disable getty@.service
