@@ -27,6 +27,20 @@ actions:
       # Screenshot tool used by /usr/local/bin/screenshot (patch.sh). KWin only authorizes
       # whitelisted binaries for ScreenShot2; spectacle is the supported capturer.
       - kde-spectacle
+      # dconf CLI: patch.sh runs `dconf update` to compile the keyboard-haptics gsetting
+      # default (/etc/dconf/db/local). Without the CLI the compile silently no-ops and
+      # key-press-feedback stays unset.
+      - dconf-cli
+
+  # The full Mobian Plasma Mobile environment: the actual phone APPS (angelfish, koko,
+  # kclock, okular, phonebook, qmlkonsole, PIM, ...) + telephony. `plasma-mobile` alone is
+  # only the shell, so without this the app drawer is nearly empty. These apps are pulled
+  # via Recommends, so this action must NOT disable recommends.
+  - action: apt
+    recommends: true
+    description: Install the full Mobian Plasma Mobile app set
+    packages:
+      - mobian-plasma-mobile
 
   - action: run
     description: Disable getty in the Plasma environment

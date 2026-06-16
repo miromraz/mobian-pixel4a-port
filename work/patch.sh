@@ -39,6 +39,25 @@ WantedBy=multi-user.target
 UNIT
 mkdir -p rmnt/etc/systemd/system/multi-user.target.wants
 ln -sf /usr/lib/systemd/system/qbootctl-mark.service rmnt/etc/systemd/system/multi-user.target.wants/qbootctl-mark.service
+# Grow the root fs to fill userdata on first boot. The image ships a ~4.1G ext4 inside a
+# ~109G offset loop (loop0, created by the subpartitions initramfs hook); without this it
+# stays 4.1G and fills up the moment the full app set is installed (which silently breaks
+# maliit/presage -> no keyboard, etc). resize2fs is online + idempotent; the flag makes it
+# a one-shot.
+install -Dm644 /dev/stdin rmnt/usr/lib/systemd/system/resize-root.service <<'UNIT'
+[Unit]
+Description=Grow root filesystem to fill the userdata partition (first boot)
+DefaultDependencies=no
+After=local-fs.target
+ConditionPathExists=!/var/lib/.rootfs-resized
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'resize2fs "$(findmnt -no SOURCE /)" && touch /var/lib/.rootfs-resized'
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+ln -sf /usr/lib/systemd/system/resize-root.service rmnt/etc/systemd/system/multi-user.target.wants/resize-root.service
 # ath10k WCN3990 runtime firmware (passive — only used once ath10k_snoc loads, after the
 # mpss modem rproc is up). board-2.bin carries variant=google_sunfish; firmware-5.bin is the
 # 60-byte QCA-ATH10K API header (real WLAN fw = wlanmdsp.mbn, already in /lib/firmware/qcom).
