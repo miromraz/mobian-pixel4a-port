@@ -170,6 +170,13 @@ if [ -d plasma ]; then
   install -Dm644 plasma/org.mobian.plasma-mode-switch.policy  rmnt/usr/share/polkit-1/actions/org.mobian.plasma-mode-switch.policy
   install -Dm644 plasma/plasma-mode-switch.desktop            rmnt/usr/share/applications/plasma-mode-switch.desktop
   install -Dm644 plasma/zz-autologin.conf                     rmnt/etc/sddm.conf.d/zz-autologin.conf
+  # Disable the KScreenLocker auto-lock + lock-on-resume system-wide. On the msm_dpu
+  # (Adreno 618) driver a freshly-spawned kscreenlocker_greet cannot create its EGL
+  # surface while the panel is blanked ("Could not create EGL surface" / eglSwapBuffers
+  # 0x300d surface:0x0), so reboot/switch — which come up locked — strand the device on
+  # a black, unrenderable lockscreen. /etc/xdg is in XDG_CONFIG_DIRS so this is the
+  # home-dir-independent default; a user kscreenlockerrc still overrides it.
+  install -Dm644 plasma/kscreenlockerrc                       rmnt/etc/xdg/kscreenlockerrc
 fi
 # --- Keyboard/button haptics under Plasma Mobile (feedbackd theme) ---
 # Plasma/KDE does not use feedbackd by default, but it works once the device theme is

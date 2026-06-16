@@ -49,3 +49,22 @@ defaults TRUE; accounts-daemon loads it at boot. Verified persistent across rebo
 
 NOTE: the feedbackd theme in work/feedbackd/ is a SEPARATE path — it only helps
 libfeedback apps (gnome-calls, notifications), NOT the maliit keyboard.
+
+## Screen locker disabled (broken lockscreen after reboot/switch)
+Symptom: after a reboot OR a desktop<->mobile mode switch the phone showed no usable
+UI and "no login page" — it was stuck on a black/unrenderable lock screen. Plasma
+Mobile comes up LOCKED, and on the `msm_dpu` (Adreno 618 / freedreno) driver a
+freshly-spawned `kscreenlocker_greet` cannot create its EGL surface while the panel
+is blanked:
+  kwin ... qt.qpa.wayland: Could not create EGL surface (EGL error 0x3000)
+  plasmashell ... qt.qpa.wayland: eglSwapBuffers failed with 0x300d, surface: 0x0
+(0x300d = EGL_BAD_SURFACE, surface 0x0 = null). The shell itself is fine when unlocked;
+only the locker greet fails to bind a surface across a screen-off/lock cycle.
+
+Fix (config, no package): disable auto-lock + lock-on-resume system-wide via
+`/etc/xdg/kscreenlockerrc` (Autolock=false, LockOnResume=false). /etc/xdg is in
+XDG_CONFIG_DIRS so it is the home-dir-independent default; a per-user
+~/.config/kscreenlockerrc still overrides it. Shipped by patch.sh (work/plasma/
+kscreenlockerrc). Verified on a real reboot: session comes up LockedHint=no with zero
+kscreenlocker/EGL errors. Matches the Steam-Deck UX goal (no lock screen). Reversible
+— delete the file or set Autolock=true to restore the (still-broken) lockscreen.
