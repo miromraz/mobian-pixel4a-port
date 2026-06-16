@@ -32,24 +32,30 @@ Session=$target
 DisplayServer=wayland
 EOF
 
-logger -t plasma-mode-switch "switching session $current -> $target; restarting graphical login"
+logger -t plasma-mode-switch "switching session $current -> $target; relaunching graphical stack"
 
-# A plain "systemctl restart sddm" does NOT end the active graphical session:
-# the autologin session runs in its own logind scope, not sddm.service's cgroup,
-# so it survives and keeps holding seat0/DRM. Tear it down explicitly, then start
-# SDDM fresh so it autologins into $target. SSH sessions are seatless (seat "-")
-# and are not affected by terminate-seat.
+# Plasma 6 runs kwin and plasmashell as systemd *user* services under
+# user@<uid>.service (plasma-kwin_wayland.service, plasma-plasmashell.service).
+# These live OUTSIDE sddm.service's cgroup and OUTSIDE the login session scope,
+# so neither "systemctl restart sddm" nor "loginctl terminate-seat" stops them --
+# the stale shell from the old mode leaks into the new session. To land cleanly we
+# must end every session of the user AND the user systemd manager.
+#
+# That teardown also kills this very script's session (and any SSH session), so the
+# SDDM relaunch is scheduled in a transient SYSTEM unit (run by root, outside any
+# user session) that fires a few seconds later -- after the user manager is gone and
+# DRM is released -- and autologins into $target.
 systemctl stop sddm || true
-loginctl terminate-seat seat0 2>/dev/null || true
+systemd-run --collect /bin/sh -c \
+    'for i in $(seq 1 30); do systemctl is-active -q user@1000.service || break; sleep 0.5; done; systemctl start sddm' \
+    >/dev/null 2>&1 || true
+loginctl terminate-user mobian 2>/dev/null || true
 
-# wait (up to ~10s) for seat0 to be free so DRM master is released before relaunch
-i=0
-while [ "$i" -lt 20 ]; do
-    if ! loginctl list-sessions --no-legend 2>/dev/null | awk '{print $4}' | grep -qx seat0; then
-        break
-    fi
-    i=$((i + 1))
+# If we are still alive here (e.g. invoked without a user session to tear down),
+# make sure SDDM comes back ourselves once the user manager is gone.
+for i in $(seq 1 30); do
+    systemctl is-active -q user@1000.service || break
     sleep 0.5
 done
-
-exec systemctl start sddm
+systemctl start sddm 2>/dev/null || true
+exit 0
