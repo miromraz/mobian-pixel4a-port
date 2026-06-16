@@ -70,6 +70,8 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
   # qcom modem/WiFi/BT userspace: qrtr-ns + rmtfs (bring libqrtr1 too, needed by
   # the prebuilt tqftpserv/pd-mapper). Their services are enabled by the packages.
   apt-get install -y --no-install-recommends qrtr-tools rmtfs
+  # iproute2: minbase rootfs lacks `ip`; needed by the USB-net default-route dispatcher.
+  apt-get install -y --no-install-recommends iproute2
   # Plasma DE (installed by the debos recipe built with `-e plasma`): make SDDM the
   # display manager in place of Phosh, and add the two recommends-free omissions:
   #   - pkexec: separate package in Debian 13, needed by the Switch Mode launcher
@@ -93,6 +95,16 @@ if [ -f ssh-authorized-keys ]; then
   chown -R 1000:1000 rmnt/home/mobian/.ssh
   printf 'mobian ALL=(ALL) NOPASSWD:ALL\n' > rmnt/etc/sudoers.d/90-mobian-nopasswd
   chmod 440 rmnt/etc/sudoers.d/90-mobian-nopasswd
+fi
+
+# --- USB-net uplink for headless apt-over-USB ---
+# NetworkManager's built-in USB-gadget support regenerates a gateway-less usb0 connection
+# (172.16.42.1/24) on every gadget (re)enumeration, so the device has no default route at
+# boot. This NM dispatcher re-asserts a LOW-priority default route (+DNS) via the host
+# (172.16.42.2) on each usb0 'up' using `ip route replace` (idempotent, no NM reentrancy).
+# metric 900 keeps wifi/cellular preferred whenever they are present. Needs iproute2 (above).
+if [ -d usbnet ]; then
+  install -Dm755 usbnet/90-usb0-uplink rmnt/etc/NetworkManager/dispatcher.d/90-usb0-uplink
 fi
 
 # --- WCN3990 WiFi + Bluetooth bringup (qcom mainline userspace, replicating pmOS) ---

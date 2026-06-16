@@ -1,0 +1,12 @@
+#!/bin/sh
+# Low-priority default route + DNS over USB-net so headless apt-over-USB works,
+# without hijacking wifi/cellular. NetworkManager's built-in USB-gadget support
+# regenerates a gateway-less usb0 connection on every (re)enumeration, so re-assert
+# this on each usb0 'up'. `ip route replace` is idempotent (no NM reentrancy); the
+# high metric (900) keeps wifi/cellular preferred whenever they are present.
+IFACE="$1"; ACTION="$2"
+[ "$IFACE" = usb0 ] || exit 0
+case "$ACTION" in up|dhcp4-change) ;; *) exit 0 ;; esac
+ip route replace default via 172.16.42.2 dev usb0 metric 900 2>/dev/null
+resolvectl dns usb0 1.1.1.1 8.8.8.8 2>/dev/null
+exit 0
