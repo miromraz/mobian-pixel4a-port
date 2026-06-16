@@ -177,6 +177,10 @@ if [ -d plasma ]; then
   # a black, unrenderable lockscreen. /etc/xdg is in XDG_CONFIG_DIRS so this is the
   # home-dir-independent default; a user kscreenlockerrc still overrides it.
   install -Dm644 plasma/kscreenlockerrc                       rmnt/etc/xdg/kscreenlockerrc
+  # Screenshot helper: KWin's ScreenShot2 capture hangs if the panel is DPMS-blanked
+  # (waits for a frame that never comes). This wakes the display + nudges a repaint, then
+  # captures via spectacle (needs kde-spectacle, from the recipe). Saves ~/Pictures/Screenshots.
+  install -Dm755 plasma/screenshot                            rmnt/usr/local/bin/screenshot
 fi
 # --- Default to the Halcyon homescreen instead of Folio ---
 # Folio's bottom app dock renders as an empty translucent band over the wallpaper when

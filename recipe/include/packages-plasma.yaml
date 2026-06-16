@@ -24,6 +24,9 @@ actions:
       # true once accounts-daemon loads hfd's extension. Pulls libdeviceinfo0,libyaml-cpp.
       - hfd-service
       - libqt5feedback5-hfd
+      # Screenshot tool used by /usr/local/bin/screenshot (patch.sh). KWin only authorizes
+      # whitelisted binaries for ScreenShot2; spectacle is the supported capturer.
+      - kde-spectacle
 
   - action: run
     description: Disable getty in the Plasma environment

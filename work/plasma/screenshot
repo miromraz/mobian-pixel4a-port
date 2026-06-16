@@ -1,0 +1,22 @@
+#!/bin/bash
+# Reliable Plasma Mobile screenshot on sunfish: KWin's ScreenShot2 capture hangs
+# while the panel is in DPMS standby (no frame to grab). Wake the display first,
+# nudge a repaint, then capture the active screen via spectacle.
+OUT="${1:-$HOME/Pictures/Screenshots/screenshot-$(date +%Y%m%d-%H%M%S).png}"
+mkdir -p "$(dirname "$OUT")"
+PID=$(pgrep -u "$USER" -f '[p]lasmashell' | head -1)
+ev(){ tr '\0' '\n' < /proc/$PID/environ 2>/dev/null | sed -n "s/^$1=//p"; }
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+export QT_QPA_PLATFORM=wayland
+export DBUS_SESSION_BUS_ADDRESS="$(ev DBUS_SESSION_BUS_ADDRESS)"
+export XDG_DATA_DIRS="$(ev XDG_DATA_DIRS)"
+kscreen-doctor --dpms on >/dev/null 2>&1
+# brief damage so the compositor renders a fresh frame for the grab
+( for i in 1 2 3 4 5 6; do gdbus call --session --dest org.freedesktop.Notifications \
+    -o /org/freedesktop/Notifications -m org.freedesktop.Notifications.Notify \
+    x 0 "" " " "." '[]' '{}' 1 >/dev/null 2>&1; sleep 0.3; done ) &
+D=$!
+timeout 15 spectacle -m -b -n -o "$OUT" >/dev/null 2>&1; rc=$?
+kill $D 2>/dev/null
+[ -s "$OUT" ] && { echo "$OUT"; exit 0; } || { echo "capture failed (rc=$rc)"; exit 1; }
