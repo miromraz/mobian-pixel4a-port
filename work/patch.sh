@@ -178,6 +178,15 @@ if [ -d plasma ]; then
   # home-dir-independent default; a user kscreenlockerrc still overrides it.
   install -Dm644 plasma/kscreenlockerrc                       rmnt/etc/xdg/kscreenlockerrc
 fi
+# --- Default to the Halcyon homescreen instead of Folio ---
+# Folio's bottom app dock renders as an empty translucent band over the wallpaper when
+# no favourites are pinned (its frosted-glass backdrop doesn't help on this GPU), which
+# reads as a graphics glitch. Halcyon (grid homescreen) has no such dock. A fresh user's
+# default homescreen comes from the mobileshell package 'defaults' file.
+MSHELL_DEFAULTS=rmnt/usr/share/plasma/shells/org.kde.plasma.mobileshell/contents/defaults
+if [ -f "$MSHELL_DEFAULTS" ]; then
+  sed -i 's|^Containment=org.kde.plasma.mobile.homescreen.folio|Containment=org.kde.plasma.mobile.homescreen.halcyon|' "$MSHELL_DEFAULTS"
+fi
 # --- Keyboard/button haptics under Plasma Mobile (feedbackd theme) ---
 # Plasma/KDE does not use feedbackd by default, but it works once the device theme is
 # present: Mobian's stock 90-feedbackd.rules already tags the drv2624 vibrator
