@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Switch Mode (Mobile/Desktop)
+Comment=Toggle between Plasma Mobile and Plasma Desktop
+Exec=pkexec /usr/local/bin/plasma-mode-switch
+Icon=preferences-desktop-display
+Terminal=false
+Categories=System;Settings;
+Keywords=mobile;desktop;switch;mode;session;
