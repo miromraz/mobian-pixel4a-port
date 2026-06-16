@@ -32,5 +32,24 @@ Session=$target
 DisplayServer=wayland
 EOF
 
-logger -t plasma-mode-switch "switching session $current -> $target; restarting sddm"
-exec systemctl restart sddm
+logger -t plasma-mode-switch "switching session $current -> $target; restarting graphical login"
+
+# A plain "systemctl restart sddm" does NOT end the active graphical session:
+# the autologin session runs in its own logind scope, not sddm.service's cgroup,
+# so it survives and keeps holding seat0/DRM. Tear it down explicitly, then start
+# SDDM fresh so it autologins into $target. SSH sessions are seatless (seat "-")
+# and are not affected by terminate-seat.
+systemctl stop sddm || true
+loginctl terminate-seat seat0 2>/dev/null || true
+
+# wait (up to ~10s) for seat0 to be free so DRM master is released before relaunch
+i=0
+while [ "$i" -lt 20 ]; do
+    if ! loginctl list-sessions --no-legend 2>/dev/null | awk '{print $4}' | grep -qx seat0; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.5
+done
+
+exec systemctl start sddm
