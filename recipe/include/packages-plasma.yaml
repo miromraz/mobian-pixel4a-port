@@ -10,6 +10,9 @@ actions:
       - plasma-mobile
       - plasma-desktop
       - sddm
+      # Display configuration KCM (the "Display" tab in System Settings / Plasma
+      # Mobile settings); a stripped recommends, only the lib was pulled otherwise.
+      - kscreen
       # pkexec is a separate package in Debian 13; needed by the Switch Mode launcher
       - pkexec
       # Without the kirigami-addons formcard QML module (a stripped recommends),
