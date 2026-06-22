@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Plasma Mode Orientation
+Comment=Set portrait in Plasma Mobile, landscape in Plasma Desktop
+Exec=/usr/local/bin/plasma-mode-orientation
+X-KDE-autostart-phase=2
+NoDisplay=true

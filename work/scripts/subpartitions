@@ -42,21 +42,3 @@ LD=$("$LOSETUP" -o "$ROOT_OFFSET" --show -f "$UD" 2>&1); rc=$?
 k "offsetloop rc=$rc ld=$LD"
 udevadm trigger 2>/dev/null || true; udevadm settle 2>/dev/null || true
 k "rootloop blkid: $(blkid "$LD" 2>&1)"
-
-# (4) PUSH pstore (PREVIOUS boot's console = the reboot cause). FOREGROUND, bounded
-# ~27s so the USB-net link has time to come up + retry. Safe: kernel core auto-pings
-# the watchdog while nothing has /dev/watchdog open, so blocking here will NOT reboot.
-mkdir -p /sys/fs/pstore 2>/dev/null; mount -t pstore pstore /sys/fs/pstore 2>/dev/null
-DIAG=/tmp/diag.txt
-{ echo "==== diag uptime=$(cat /proc/uptime 2>/dev/null) ===="; uname -a
-  echo "cmdline: $(cat /proc/cmdline)"
-  echo "offsetloop rc=$rc ld=$LD"; blkid "$LD" 2>&1
-  echo "== pstore files (PREVIOUS boot) =="; ls -l /sys/fs/pstore 2>&1
-  for f in /sys/fs/pstore/*; do [ -f "$f" ] && { echo "---- $f ----"; cat "$f" 2>&1; echo; }; done
-  echo "== ramoops/reboot markers this boot =="; dmesg 2>/dev/null | grep -iE 'pstore|ramoops|panic|watchdog|reboot|regulator' | tail -20
-  echo "==== end ===="
-} > "$DIAG" 2>&1
-for n in $(seq 1 9); do
-  nc 172.16.42.2 9999 < "$DIAG" 2>/dev/null && break
-  sleep 3
-done

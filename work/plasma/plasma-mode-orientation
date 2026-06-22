@@ -1,0 +1,23 @@
+#!/bin/sh
+# Apply screen orientation matching the current Plasma mode:
+#   plasma-mobile.desktop  -> portrait  (vertical, rotation none)
+#   plasma.desktop / other -> landscape (rotation right)
+# Installed as a Plasma autostart entry; runs on each login in both shells, so
+# after plasma-mode-switch flips the SDDM autologin session and relaunches, the
+# new session lands in the correct orientation. DSI-1 is the (only) panel; its
+# native scan-out is portrait, so rotation.none = portrait and .right = landscape.
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+CONF=/etc/sddm.conf.d/zz-autologin.conf
+OUT=DSI-1
+mode=$(sed -n "s/^Session=//p" "$CONF" 2>/dev/null | head -n1)
+case "$mode" in
+  plasma-mobile.desktop) rot=none ;;
+  *)                     rot=right ;;
+esac
+# kscreen/kwin may not be ready yet at autostart; wait for the panel to appear.
+for i in $(seq 1 25); do
+  kscreen-doctor -o 2>/dev/null | grep -q "$OUT" && break
+  sleep 1
+done
+kscreen-doctor "output.$OUT.rotation.$rot" >/dev/null 2>&1
+exit 0

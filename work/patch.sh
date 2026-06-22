@@ -14,6 +14,20 @@ install -m0755 scripts/subpartitions rmnt/etc/initramfs-tools/scripts/local-top/
 # watchdog-kick for the booted Mobian (so it doesn't reboot ~50s after boot)
 install -Dm755 watchdog-kick rmnt/usr/sbin/watchdog-kick
 mkdir -p rmnt/etc/modules-load.d; echo qcom_wdt > rmnt/etc/modules-load.d/qcom_wdt.conf
+# Bluetooth input: uhid is needed for BLE-HID (HID-over-GATT / HOG) peripherals -- keyboards,
+# mice, gamepads -- otherwise bluetoothd's input-hog profile accept fails and no /dev/input
+# node is created even though the device shows "Connected". uinput lets AVRCP create the
+# media-key passthrough device for BT headsets; joydev adds legacy /dev/input/js* for pads.
+# All three are =m and were NOT autoloaded -> load at boot.
+printf 'uhid\nuinput\njoydev\n' > rmnt/etc/modules-load.d/bluetooth-input.conf
+# BT-off crash fix: turning Bluetooth OFF while a device is still connected powers off the
+# WCN3990 mid-stream; the BT geni UART (88c000.serial) then runtime-autosuspends and
+# geni_se_resources_off gates its clock + drops its interconnect (ICC) vote while the serial
+# engine still has residual RX state from the live link -> the next bus access NoC-times-out
+# -> qcom_wdt resets the WHOLE phone. Keeping the BT geni runtime-active avoids the gating.
+# (Disconnect-first is safe; only the forcible down-with-live-link path hits this.)
+mkdir -p rmnt/etc/udev/rules.d
+printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/control}="on"\n' > rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
 # IPA (IP Accelerator) driver triggers a silent SoC reset ~13s into Mobian (confirmed via
 # live console: last msg every cycle is "ipa 1e40000.ipa: IPA driver setup completed").
 # It's only network offload -> blacklist it so the device boots to Phosh.
@@ -99,6 +113,28 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
   # Guarded on sddm being present so this is a no-op on a Phosh base image.
   if command -v sddm >/dev/null 2>&1; then
     apt-get install -y --no-install-recommends pkexec qml6-module-org-kde-kirigamiaddons-formcard
+    # --- Plasma 6.6.5 from Debian forky (trixie ships only 6.3.6) ---
+    # Partial dist-upgrade toward testing: pin forky LOW (100 < trixie 500) so only the
+    # explicitly `-t forky` packages + the deps they force pull from forky; the Plasma
+    # stack then upgrades to 6.6.5 (Qt 6.10). ~473 pkgs incl glibc 2.42; systemd/udev/
+    # dbus/NM/pipewire/ModemManager stay trixie (hw bringup unaffected). --force-confold
+    # preserves our DE configs (SDDM autologin, mode-toggle, BT-geni udev).
+    printf 'deb http://deb.debian.org/debian forky main\n' > /etc/apt/sources.list.d/forky.list
+    printf 'Package: *\nPin: release n=forky\nPin-Priority: 100\n' > /etc/apt/preferences.d/99-forky-low
+    apt-get update
+    apt-get install -y -t forky -o Dpkg::Options::=--force-confold \
+      plasma-workspace plasma-desktop plasma-mobile
+    # feedbackd drives the Plasma MOBILE SHELL haptics (lock-screen keyboard +
+    # quicksettings: HapticsEffect.buttonVibrate -> org.sigxcpu.Feedback.Haptic ->
+    # drv2624). Separate path from the maliit/hfd keyboard haptics above. The forky
+    # upgrade can drop it, so (re)install explicitly; its theme is shipped below.
+    apt-get install -y feedbackd
+    # The partial upgrade can reset the dbus setuid launch-helper group to polkitd,
+    # which silently breaks EVERY KAuth system-bus helper (flashlight, backlight/
+    # brightness, ...) because the messagebus user can no longer exec it. Restore the
+    # known-good owner/mode.
+    H=/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+    [ -e "$H" ] && { chgrp messagebus "$H"; chmod 4754 "$H"; }
     systemctl disable phosh.service 2>/dev/null || true
     echo /usr/bin/sddm > /etc/X11/default-display-manager
     systemctl enable sddm.service
@@ -189,6 +225,12 @@ if [ -d plasma ]; then
   install -Dm644 plasma/org.mobian.plasma-mode-switch.policy  rmnt/usr/share/polkit-1/actions/org.mobian.plasma-mode-switch.policy
   install -Dm644 plasma/plasma-mode-switch.desktop            rmnt/usr/share/applications/plasma-mode-switch.desktop
   install -Dm644 plasma/zz-autologin.conf                     rmnt/etc/sddm.conf.d/zz-autologin.conf
+  # Screen orientation per mode: Plasma Mobile -> portrait, Plasma Desktop -> landscape.
+  # Autostart entry runs in both shells, reads the autologin Session= and rotates DSI-1
+  # (native portrait panel: rotation none=portrait, right=landscape) so each toggle lands
+  # in the matching orientation.
+  install -Dm755 plasma/plasma-mode-orientation               rmnt/usr/local/bin/plasma-mode-orientation
+  install -Dm644 plasma/plasma-mode-orientation.desktop       rmnt/etc/xdg/autostart/plasma-mode-orientation.desktop
   # Disable the KScreenLocker auto-lock + lock-on-resume system-wide. On the msm_dpu
   # (Adreno 618) driver a freshly-spawned kscreenlocker_greet cannot create its EGL
   # surface while the panel is blanked ("Could not create EGL surface" / eglSwapBuffers
