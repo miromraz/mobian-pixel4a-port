@@ -1,10 +1,11 @@
 # Mobian Pixel 4a Port (sunfish / SM7150)
 
-Booting **Mobian (Debian 13 "trixie", Phosh)** on the **Google Pixel 4a** (codename
+Booting **Mobian (Debian 13 "trixie")** on the **Google Pixel 4a** (codename
 `sunfish`, Qualcomm SM7150) on a **mainline Linux kernel** (sm7150-mainline fork,
 v7.1-rc3), with reverse-engineered drivers for the device-specific hardware.
+Ships **Plasma Mobile + Desktop** with a one-tap mode toggle (Phosh still buildable).
 
-> Status: **boots to the Phosh greeter and stays up.** See [Status](#status) below.
+> Status: **boots to the greeter and stays up.** See [Status](#status) below.
 
 This repo holds the **reproducible source** — build scripts, the debos recipe, the
 initramfs hooks, the kernel config, and the porting notes. It deliberately does **not**
@@ -17,15 +18,16 @@ contain the built images, kernel modules, or proprietary firmware blobs (see
 
 | Component | State |
 |-|-|
-| Boot to Phosh | ✅ stable (zero resets after the IPA fix) |
+| Boot | ✅ stable (zero resets after the IPA fix) |
+| Desktop environment | ✅ **Plasma Mobile + Desktop (6.6.5)** with a one-tap Mobile↔Desktop toggle (SDDM autologin, per-mode orientation, keyboard haptics); Phosh still buildable |
 | Display / GPU (a630, DPU) | ✅ `a630_sqe.fw` + `a630_gmu.bin` load, DPU up |
 | USB (gadget NCM + ACM) | ✅ used as the debug channel |
-| Bluetooth (WCN3990) | ✅ `hci0` UP RUNNING — BD address from DT `local-bd-address` (WCN3990 has none in NVM), injected into the boot dtb by `patch.sh` |
+| Bluetooth (WCN3990) | ✅ `hci0` UP RUNNING — BD address from DT `local-bd-address` (WCN3990 has none in NVM), injected into the boot dtb by `patch.sh`; BLE-HID via `uhid` autoload; BT-off-while-connected reset fixed (keep BT geni UART runtime-active) |
 | Watchdog (qcom APSS) | ✅ handled (kernel-core auto-ping) |
 | A/B slot persistence | ✅ `qbootctl -m` oneshot at boot (`qbootctl-mark.service`) |
 | WiFi (WCN3990 / ath10k_snoc) | ✅ `wlan0` scans 2.4/5 GHz — qcom QMI stack (`qrtr-ns` + `tqftpserv` + `rmtfs` + `pd-mapper`) starts the WLAN PD, then single `modprobe ath10k_snoc` after WLFW |
-| Audio | ❌ pending (TDM/amp rework — see sunfish notes) |
-| Modem / cellular | ❌ pending |
+| Audio | ❌ blocked — signed-firmware ceiling (ADSP `sar.cc:27` SSR loop tears down the card; card + amps wired on tertiary TDM) |
+| Modem / cellular | ⚠️ SIM + control plane work (IMEI/QMI up, 25 MCFG configs load), but RF won't go online (`DeviceNotReady`) → data blocked |
 
 ### WiFi + Bluetooth bringup (WCN3990 combo chip, replicating pmOS)
 
