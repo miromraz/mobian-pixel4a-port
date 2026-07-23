@@ -1,0 +1,13 @@
+[Unit]
+Description=hexagonrpcd (ADSP root PD)
+After=multi-user.target
+
+[Service]
+ExecStartPre=/bin/sh -c 'n=0; while [ ! -e /dev/fastrpc-adsp ]; do n=$((n+1)); [ $n -ge 180 ] && exit 1; sleep 0.5; done'
+ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -R /usr/share/qcom/sm7150/Google/sunfish
+Restart=always
+RestartSec=2
+TimeoutStartSec=150
+
+[Install]
+WantedBy=multi-user.target

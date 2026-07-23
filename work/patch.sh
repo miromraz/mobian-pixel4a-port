@@ -192,14 +192,19 @@ if [ -d ipa ]; then
   ln -sf /etc/systemd/system/ipa-late-load.service \
     rmnt/etc/systemd/system/multi-user.target.wants/ipa-late-load.service
 fi
-# --- ADSP SAR SSR crash storm (sar.cc:27) re-inits remoteproc/glink/IOMMU every ~10s and
-# periodically glitches the dwc3 USB gadget (~15 min) -> usb-net/SSH drops. Stop the ADSP at
-# boot to halt the storm. Parks audio+SAR (already dead from this same crash). Reversible.
-if [ -d adsp ]; then
-  install -Dm755 adsp/sbin/stop-adsp-ssr.sh rmnt/usr/local/sbin/stop-adsp-ssr.sh
-  install -Dm644 adsp/units/stop-adsp-ssr.service rmnt/etc/systemd/system/stop-adsp-ssr.service
-  ln -sf /etc/systemd/system/stop-adsp-ssr.service \
-    rmnt/etc/systemd/system/multi-user.target.wants/stop-adsp-ssr.service
+# --- hexagonrpcd sensor daemons: serve the ADSP root PD + sensors PD FastRPC endpoints so the
+# SEE/CHRE sensor firmware brings up (replaces the old stop-adsp-ssr workaround, now that the
+# sar.cc:27 SSR loop is fixed at the source via the smp2p sleepstate dtb entry added below).
+if [ -d hexagonrpc ]; then
+  install -Dm755 hexagonrpc/bin/hexagonrpcd rmnt/usr/bin/hexagonrpcd
+  install -Dm644 hexagonrpc/lib/libhexagonrpc.so.0.4 rmnt/usr/lib/aarch64-linux-gnu/libhexagonrpc.so.0.4
+  mkdir -p rmnt/usr/share/qcom/sm7150/Google && cp -a hexagonrpc/share/sunfish rmnt/usr/share/qcom/sm7150/Google/
+  install -Dm644 hexagonrpc/units/hexagonrpcd-adsp-rootpd.service rmnt/etc/systemd/system/hexagonrpcd-adsp-rootpd.service
+  install -Dm644 hexagonrpc/units/hexagonrpcd-adsp-sensorspd.service rmnt/etc/systemd/system/hexagonrpcd-adsp-sensorspd.service
+  ln -sf /etc/systemd/system/hexagonrpcd-adsp-rootpd.service \
+    rmnt/etc/systemd/system/multi-user.target.wants/hexagonrpcd-adsp-rootpd.service
+  ln -sf /etc/systemd/system/hexagonrpcd-adsp-sensorspd.service \
+    rmnt/etc/systemd/system/multi-user.target.wants/hexagonrpcd-adsp-sensorspd.service
 fi
 # --- MCFG modem carrier-config RFS tree, extracted from the stock vendor partition
 # (super -> vendor_a -> rfs/msm/mpss/readonly). The patched tqftpserv above (wcn/bin/tqftpserv,
@@ -342,6 +347,16 @@ if fdtget emnt/sm7150-google-sunfish.dtb "$BT_NODE" compatible >/dev/null 2>&1; 
 else
   echo "WARN: bluetooth node not found in dtb, skipping local-bd-address"
 fi
+# ADSP: the SEE firmware's remote_proc_state sensor needs the AP-side "sleepstate" SMP2P
+# outbound entry. Without it CHRE watchdog-kills the sensor PD every ~10s (sar.cc:27) and the
+# sound card tears down with it. Add the smp2p-adsp sleepstate-out entry (idempotent).
+D=emnt/sm7150-google-sunfish.dtb
+if ! fdtget "$D" /smp2p-adsp/sleepstate-out qcom,entry-name >/dev/null 2>&1; then
+  fdtput -c "$D" /smp2p-adsp/sleepstate-out
+  fdtput -t s "$D" /smp2p-adsp/sleepstate-out qcom,entry-name sleepstate
+  fdtput -t u "$D" /smp2p-adsp/sleepstate-out "#qcom,smem-state-cells" 1
+fi
+echo "dtb sleepstate entry: $(fdtget "$D" /smp2p-adsp/sleepstate-out qcom,entry-name 2>&1)"
 sync
 umount emnt
 losetup -d "$LOOP"
