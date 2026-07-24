@@ -206,6 +206,13 @@ if [ -d hexagonrpc ]; then
   ln -sf /etc/systemd/system/hexagonrpcd-adsp-sensorspd.service \
     rmnt/etc/systemd/system/multi-user.target.wants/hexagonrpcd-adsp-sensorspd.service
 fi
+# --- sunfish speaker audio (kernel branch sunfish-audio-tdm): SEC_TDM machine-driver
+# module + saved mixer state (SEC_TDM_RX_0 routing + moderate amp volumes).
+if [ -d kernel ]; then
+  install -Dm644 kernel/snd-soc-sm8250.ko \
+    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/snd-soc-sm8250.ko"
+  install -Dm644 kernel/asound.state rmnt/var/lib/alsa/asound.state
+fi
 # --- MCFG modem carrier-config RFS tree, extracted from the stock vendor partition
 # (super -> vendor_a -> rfs/msm/mpss/readonly). The patched tqftpserv above (wcn/bin/tqftpserv,
 # which adds a /readonly/vendor/mbn/ -> this tree mapping) serves it so the modem LOADS its
@@ -313,6 +320,14 @@ cp "rmnt/boot/initrd.img-$KVER" newinitrd
 umount rmnt
 mount "${LOOP}p1" emnt
 cp newinitrd emnt/initrd.img
+# --- Audio+sensors kernel: sleepstate SMP2P + masked 32-pad LPI pinctrl + sec-TDM
+# speaker audio (see kernel branch sunfish-audio-tdm). The dtb is built from source
+# (already carries sleepstate + gpio-reserved-ranges); the fdtput blocks below remain
+# as idempotent no-ops / BT-address refresh.
+if [ -d kernel ]; then
+  cp kernel/vmlinuz.efi emnt/vmlinuz.efi
+  cp kernel/sm7150-google-sunfish.dtb emnt/sm7150-google-sunfish.dtb
+fi
 # Fast-boot console: strip serial consoles from the base entry. Routing the verbose kernel
 # log out ttyMSM0/ttyGS0 @115200 synchronously (amplified by the sar.cc ADSP SSR spam)
 # throttled boot to ~8 min. Keep only the framebuffer console.
