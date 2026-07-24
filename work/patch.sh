@@ -212,6 +212,14 @@ if [ -d kernel ]; then
   install -Dm644 kernel/snd-soc-sm8250.ko \
     "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/snd-soc-sm8250.ko"
   install -Dm644 kernel/asound.state rmnt/var/lib/alsa/asound.state
+  # UCM2 profile: PipeWire/WirePlumber pick up the card as a desktop sink
+  # ("Internal stereo speakers"); hw volumes fixed safe, softvol on top.
+  install -Dm644 "kernel/ucm/Google/sunfish/HiFi.conf" \
+    rmnt/usr/share/alsa/ucm2/Google/sunfish/HiFi.conf
+  install -Dm644 "kernel/ucm/conf.d/sm8250/google-GooglePixel4a.conf" \
+    rmnt/usr/share/alsa/ucm2/conf.d/sm8250/google-GooglePixel4a.conf
+  install -Dm644 "kernel/ucm/conf.d/sm8250/Google Pixel 4a.conf" \
+    "rmnt/usr/share/alsa/ucm2/conf.d/sm8250/Google Pixel 4a.conf"
 fi
 # --- MCFG modem carrier-config RFS tree, extracted from the stock vendor partition
 # (super -> vendor_a -> rfs/msm/mpss/readonly). The patched tqftpserv above (wcn/bin/tqftpserv,
