@@ -220,6 +220,10 @@ if [ -d kernel ]; then
     rmnt/usr/share/alsa/ucm2/conf.d/sm8250/google-GooglePixel4a.conf
   install -Dm644 "kernel/ucm/conf.d/sm8250/Google Pixel 4a.conf" \
     "rmnt/usr/share/alsa/ucm2/conf.d/sm8250/Google Pixel 4a.conf"
+  # Force the sink to S16 (the sec-TDM link runs 16-bit slots; a 24-bit
+  # PipeWire stream is accepted by the DSP but comes out inaudible).
+  install -Dm644 kernel/wireplumber/51-sunfish-s16.conf \
+    rmnt/etc/wireplumber/wireplumber.conf.d/51-sunfish-s16.conf
 fi
 # --- MCFG modem carrier-config RFS tree, extracted from the stock vendor partition
 # (super -> vendor_a -> rfs/msm/mpss/readonly). The patched tqftpserv above (wcn/bin/tqftpserv,
