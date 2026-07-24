@@ -28,6 +28,17 @@ printf 'uhid\nuinput\njoydev\n' > rmnt/etc/modules-load.d/bluetooth-input.conf
 # (Disconnect-first is safe; only the forcible down-with-live-link path hits this.)
 mkdir -p rmnt/etc/udev/rules.d
 printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/control}="on"\n' > rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
+# WCD9375 headphone audio fix: the RX SoundWire path programs its data ports at
+# stream prepare using no-PM register transfers, which -EIO unless the SWR bus
+# clock (from the rx-macro, gated by the SoundWire controller's iface clock) is
+# already running. Keeping the RX SoundWire controller + rx/va macros runtime-
+# active keeps that clock up, so the Headphones sink prepares instead of the card
+# dropping to profile "off". (Root-caused 2026-07-24; see WCD9375 memory.)
+{
+  printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ee0000.codec", ATTR{power/control}="on"\n'
+  printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62f20000.codec", ATTR{power/control}="on"\n'
+  printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ef0000.soundwire", ATTR{power/control}="on"\n'
+} > rmnt/etc/udev/rules.d/90-sunfish-audio-swr.rules
 # IPA (IP Accelerator) driver triggers a silent SoC reset ~13s into Mobian (confirmed via
 # live console: last msg every cycle is "ipa 1e40000.ipa: IPA driver setup completed").
 # It's only network offload -> blacklist it so the device boots to Phosh.
