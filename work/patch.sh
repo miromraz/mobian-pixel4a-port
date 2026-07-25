@@ -47,6 +47,17 @@ printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{powe
   printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ec0000.codec", ATTR{power/control}="on"\n'
   printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ed0000.soundwire", ATTR{power/control}="on"\n'
 } > rmnt/etc/udev/rules.d/90-sunfish-audio-swr.rules
+# ADSP Sensor Core -> iio-sensor-proxy. sunfish's sensors (LSM6DSR accel/gyro, TCS3701
+# ALS+prox, LIS2MDL mag) hang off the hypervisor-fenced SSC bus owned by the ADSP, so
+# userspace reads them over QMI/QRTR service 400 with libssc, not via IIO drivers.
+# iio-sensor-proxy 3.9 ships drv-ssc-{accel,light,proximity} but its stock rules only
+# tag light+compass on fastrpc-adsp; sunfish also serves accel and proximity. Append with
+# `+=` rather than reassigning the whole list with `=`: an `=` only wins because 81 sorts
+# after the stock 80- file, so it would silently regress if the package ever renumbered
+# its rules. sunfish has no fused compass, but leaving the stock ssc-compass tag in place
+# is harmless — that driver's discover() fails fast and the sensor is simply not offered.
+printf 'ACTION=="add", SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp*", ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel ssc-proximity"\n' \
+  > rmnt/etc/udev/rules.d/81-iio-sensor-proxy-sunfish.rules
 # IPA (IP Accelerator) driver triggers a silent SoC reset ~13s into Mobian (confirmed via
 # live console: last msg every cycle is "ipa 1e40000.ipa: IPA driver setup completed").
 # It's only network offload -> blacklist it so the device boots to Phosh.
@@ -124,6 +135,16 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
   apt-get install -y --no-install-recommends qrtr-tools rmtfs
   # iproute2: minbase rootfs lacks `ip`; needed by the USB-net default-route dispatcher.
   apt-get install -y --no-install-recommends iproute2
+  # Sensors: trixie ships iio-sensor-proxy 3.7 which has no Sensor Core support at all.
+  # forky ships 3.9, which build-deps libssc-dev on arm64 and so can talk to the ADSP
+  # SSC over QMI/QRTR (see the 81-iio-sensor-proxy-sunfish udev rule above). libssc-bin
+  # brings `ssccli`, the standalone reader used to verify a sensor without the daemon.
+  # The forky list+pin are written idempotently here because the Plasma block below
+  # (which also writes them) only runs on an sddm image, and sensors are DE-agnostic.
+  printf "deb http://deb.debian.org/debian forky main\n" > /etc/apt/sources.list.d/forky.list
+  printf "Package: *\nPin: release n=forky\nPin-Priority: 100\n" > /etc/apt/preferences.d/99-forky-low
+  apt-get update
+  apt-get install -y -t forky iio-sensor-proxy libssc-bin
   # Plasma DE (installed by the debos recipe built with `-e plasma`): make SDDM the
   # display manager in place of Phosh, and add the two recommends-free omissions:
   #   - pkexec: separate package in Debian 13, needed by the Switch Mode launcher

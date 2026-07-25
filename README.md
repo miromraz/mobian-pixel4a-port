@@ -26,6 +26,8 @@ contain the built images, kernel modules, or proprietary firmware blobs (see
 | Watchdog (qcom APSS) | ✅ handled (kernel-core auto-ping) |
 | A/B slot persistence | ✅ `qbootctl -m` oneshot at boot (`qbootctl-mark.service`) |
 | WiFi (WCN3990 / ath10k_snoc) | ✅ `wlan0` scans 2.4/5 GHz — qcom QMI stack (`qrtr-ns` + `tqftpserv` + `rmtfs` + `pd-mapper`) starts the WLAN PD, then single `modprobe ath10k_snoc` after WLFW |
+| Sensors (accel, ALS, proximity) | ✅ **wired into the desktop** via the ADSP Sensor Core — the `sleepstate` SMP2P entry + `hexagonrpcd` keep the SEE sensor firmware alive (no more `sar.cc:27`), then `iio-sensor-proxy` 3.9 reads them over QMI/QRTR service 400 through `libssc`. Verified by tilting the device: KWin auto-rotates off the accelerometer |
+| Sensors (magnetometer, gyroscope) | ⚠️ readable, not exposed — the SSC serves both and `ssccli` prints plausible values (\|B\| ≈ 47 µT), but `iio-sensor-proxy` has no magnetometer or gyro driver, and this device has no *fused* compass sensor for its `ssc-compass` driver to bind to. Nothing in the desktop stack consumes either |
 | Audio | ❌ blocked — signed-firmware ceiling (ADSP `sar.cc:27` SSR loop tears down the card; card + amps wired on tertiary TDM) |
 | Modem / cellular | ⚠️ SIM + control plane work (IMEI/QMI up, 25 MCFG configs load), but RF won't go online (`DeviceNotReady`) → data blocked |
 
