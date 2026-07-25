@@ -9,6 +9,10 @@ echo "loop=$LOOP"
 mkdir -p rmnt emnt
 mount "${LOOP}p2" rmnt
 RUUID=$(blkid -s UUID -o value "${LOOP}p2"); echo "root UUID=$RUUID"
+# The debos build leaves / owned by the build user; systemd-tmpfiles then refuses every
+# /tmp rule ("unsafe path transition") -> /tmp/.X11-unix is never created -> kwin can't
+# start Xwayland ("Failed to create Xwayland connection sockets") and all X11 apps die.
+chown root:root rmnt
 install -m0755 hooks/subpartitions rmnt/etc/initramfs-tools/hooks/subpartitions
 install -m0755 scripts/subpartitions rmnt/etc/initramfs-tools/scripts/local-top/subpartitions
 # watchdog-kick for the booted Mobian (so it doesn't reboot ~50s after boot)
@@ -28,16 +32,20 @@ printf 'uhid\nuinput\njoydev\n' > rmnt/etc/modules-load.d/bluetooth-input.conf
 # (Disconnect-first is safe; only the forcible down-with-live-link path hits this.)
 mkdir -p rmnt/etc/udev/rules.d
 printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/control}="on"\n' > rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
-# WCD9375 headphone audio fix: the RX SoundWire path programs its data ports at
-# stream prepare using no-PM register transfers, which -EIO unless the SWR bus
-# clock (from the rx-macro, gated by the SoundWire controller's iface clock) is
-# already running. Keeping the RX SoundWire controller + rx/va macros runtime-
-# active keeps that clock up, so the Headphones sink prepares instead of the card
-# dropping to profile "off". (Root-caused 2026-07-24; see WCD9375 memory.)
+# WCD9375 audio fix: the SoundWire paths program their data ports at stream
+# prepare using no-PM register transfers, which -EIO unless the SWR bus clock
+# (from the rx/tx macro, gated by the SoundWire controller's iface clock) is
+# already running. Keeping the SoundWire controllers + macros runtime-active
+# keeps that clock up, so the Headphones sink (RX: 62ef + rx-macro 62ee +
+# va-macro 62f2) and the WCD9375 headset-mic path (TX: 62ed + tx-macro 62ec)
+# prepare instead of the card dropping to profile "off".
+# (Root-caused 2026-07-24; see WCD9375 memory.)
 {
   printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ee0000.codec", ATTR{power/control}="on"\n'
   printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62f20000.codec", ATTR{power/control}="on"\n'
   printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ef0000.soundwire", ATTR{power/control}="on"\n'
+  printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ec0000.codec", ATTR{power/control}="on"\n'
+  printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="62ed0000.soundwire", ATTR{power/control}="on"\n'
 } > rmnt/etc/udev/rules.d/90-sunfish-audio-swr.rules
 # IPA (IP Accelerator) driver triggers a silent SoC reset ~13s into Mobian (confirmed via
 # live console: last msg every cycle is "ipa 1e40000.ipa: IPA driver setup completed").
@@ -217,11 +225,22 @@ if [ -d hexagonrpc ]; then
   ln -sf /etc/systemd/system/hexagonrpcd-adsp-sensorspd.service \
     rmnt/etc/systemd/system/multi-user.target.wants/hexagonrpcd-adsp-sensorspd.service
 fi
-# --- sunfish speaker audio (kernel branch sunfish-audio-tdm): SEC_TDM machine-driver
-# module + saved mixer state (SEC_TDM_RX_0 routing + moderate amp volumes).
+# --- sunfish audio (kernel branch sunfish-audio-tdm): SEC_TDM speaker machine-driver
+# module + saved mixer state (SEC_TDM_RX_0 routing + moderate amp volumes), plus the
+# built-in-mic stack: RT5514P codec on tertiary TDM (snd-soc-rt5514 + rl6231 PLL lib)
+# and the q6afe TDM-control-field plumbing the capture port needs.
 if [ -d kernel ]; then
   install -Dm644 kernel/snd-soc-sm8250.ko \
     "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/snd-soc-sm8250.ko"
+  install -Dm644 kernel/q6afe.ko \
+    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/qdsp6/q6afe.ko"
+  install -Dm644 kernel/q6afe-dai.ko \
+    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/qdsp6/q6afe-dai.ko"
+  install -Dm644 kernel/snd-soc-rt5514.ko \
+    "rmnt/lib/modules/$KVER/kernel/sound/soc/codecs/snd-soc-rt5514.ko"
+  install -Dm644 kernel/snd-soc-rl6231.ko \
+    "rmnt/lib/modules/$KVER/kernel/sound/soc/codecs/snd-soc-rl6231.ko"
+  depmod -b rmnt "$KVER"
   install -Dm644 kernel/asound.state rmnt/var/lib/alsa/asound.state
   # UCM2 profile: PipeWire/WirePlumber pick up the card as a desktop sink
   # ("Internal stereo speakers"); hw volumes fixed safe, softvol on top.
