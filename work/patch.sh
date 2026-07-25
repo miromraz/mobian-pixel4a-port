@@ -254,6 +254,12 @@ if [ -d kernel ]; then
   # PipeWire stream is accepted by the DSP but comes out inaudible).
   install -Dm644 kernel/wireplumber/51-sunfish-s16.conf \
     rmnt/etc/wireplumber/wireplumber.conf.d/51-sunfish-s16.conf
+  # CS35L41 CSPL speaker-protection DSP firmware (stock vendor blob) —
+  # UCM preloads it and routes PCM through the DSP; unlocks stock gain 17.
+  install -Dm644 kernel/cirrus/cs35l41-dsp1-spk-prot.wmfw \
+    rmnt/lib/firmware/cirrus/cs35l41-dsp1-spk-prot.wmfw
+  install -Dm644 kernel/cirrus/cs35l41-dsp1-spk-prot.bin \
+    rmnt/lib/firmware/cirrus/cs35l41-dsp1-spk-prot.bin
 fi
 # --- MCFG modem carrier-config RFS tree, extracted from the stock vendor partition
 # (super -> vendor_a -> rfs/msm/mpss/readonly). The patched tqftpserv above (wcn/bin/tqftpserv,
