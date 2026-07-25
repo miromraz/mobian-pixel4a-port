@@ -138,8 +138,12 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
     # stack then upgrades to 6.6.5 (Qt 6.10). ~473 pkgs incl glibc 2.42; systemd/udev/
     # dbus/NM/pipewire/ModemManager stay trixie (hw bringup unaffected). --force-confold
     # preserves our DE configs (SDDM autologin, mode-toggle, BT-geni udev).
-    printf 'deb http://deb.debian.org/debian forky main\n' > /etc/apt/sources.list.d/forky.list
-    printf 'Package: *\nPin: release n=forky\nPin-Priority: 100\n' > /etc/apt/preferences.d/99-forky-low
+    # NB double quotes: this whole block is the body of `sh -ec '...'`, so a single quote
+    # here silently CLOSES that string. Until this was fixed the chroot received a script
+    # truncated at this line (unterminated `if` -> sh exits 2 -> set -e aborts patch.sh),
+    # so nothing in the block ran at all. `bash -n` does not catch it: quote parity is even.
+    printf "deb http://deb.debian.org/debian forky main\n" > /etc/apt/sources.list.d/forky.list
+    printf "Package: *\nPin: release n=forky\nPin-Priority: 100\n" > /etc/apt/preferences.d/99-forky-low
     apt-get update
     apt-get install -y -t forky -o Dpkg::Options::=--force-confold \
       plasma-workspace plasma-desktop plasma-mobile
