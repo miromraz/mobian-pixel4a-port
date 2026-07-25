@@ -1,0 +1,84 @@
+From 5278582d025d7a28343f5843bc2b44cb3ef692d1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
+Date: Sat, 25 Jul 2026 22:55:43 +0200
+Subject: [PATCH 4/9] media: venus: core: bound sys_error recovery retries
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When recovery cannot resume runtime PM - for example after a firmware
+fault during probe - venus_sys_error_handler() rescheduled itself every
+10ms forever. The unbounded retry loop live-locked the system, and a
+PAS shutdown of a faulted DSP can block in D state, so the machine
+never made progress.
+
+Replace the retry loop with a bounded, per-core counter: give up
+permanently after VENUS_MAX_SYS_ERR_RETRIES (4) consecutive failures,
+leaving the IRQ disabled and not rescheduling, and reset the counter on
+a successful recovery. Space the retries 500ms apart instead of 10ms.
+
+Signed-off-by: Miroslav Mráz <mraz.miro@seznam.cz>
+---
+ drivers/media/platform/qcom/venus/core.c | 15 ++++++++++++++-
+ drivers/media/platform/qcom/venus/core.h |  2 ++
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/qcom/venus/core.c b/drivers/media/platform/qcom/venus/core.c
+index 3a73e5de6079..a324a0084a6b 100644
+--- a/drivers/media/platform/qcom/venus/core.c
++++ b/drivers/media/platform/qcom/venus/core.c
+@@ -29,6 +29,9 @@
+ #include "pm_helpers.h"
+ #include "hfi_venus_io.h"
+ 
++/* Give up sys_error recovery after this many consecutive failed attempts. */
++#define VENUS_MAX_SYS_ERR_RETRIES	4
++
+ static void venus_coredump(struct venus_core *core)
+ {
+ 	struct device *dev;
+@@ -164,10 +167,20 @@ static void venus_sys_error_handler(struct work_struct *work)
+ 		dev_warn_ratelimited(core->dev,
+ 				     "System error has occurred, recovery failed to %s\n",
+ 				     err_msg);
+-		schedule_delayed_work(&core->work, msecs_to_jiffies(10));
++
++		if (++core->sys_err_retries > VENUS_MAX_SYS_ERR_RETRIES) {
++			dev_err(core->dev,
++				"system error recovery failed, giving up after %u attempts\n",
++				core->sys_err_retries);
++			return;
++		}
++
++		schedule_delayed_work(&core->work, msecs_to_jiffies(500));
+ 		return;
+ 	}
+ 
++	core->sys_err_retries = 0;
++
+ 	dev_warn(core->dev, "system error has occurred (recovered)\n");
+ 
+ 	mutex_lock(&core->lock);
+diff --git a/drivers/media/platform/qcom/venus/core.h b/drivers/media/platform/qcom/venus/core.h
+index 1a1c802a6956..e82327a4756f 100644
+--- a/drivers/media/platform/qcom/venus/core.h
++++ b/drivers/media/platform/qcom/venus/core.h
+@@ -170,6 +170,7 @@ struct venus_format {
+  * @done:	a completion for sync HFI operations
+  * @error:	an error returned during last HFI sync operations
+  * @sys_error:	an error flag that signal system error event
++ * @sys_err_retries: consecutive failed sys_error recovery attempts
+  * @sys_err_done: a waitqueue to wait for system error recovery end
+  * @core_ops:	the core operations
+  * @pm_ops:	a pointer to pm operations
+@@ -230,6 +231,7 @@ struct venus_core {
+ 	struct completion done;
+ 	unsigned int error;
+ 	unsigned long sys_error;
++	unsigned int sys_err_retries;
+ 	wait_queue_head_t sys_err_done;
+ 	const struct hfi_core_ops *core_ops;
+ 	const struct venus_pm_ops *pm_ops;
+-- 
+2.55.0
+

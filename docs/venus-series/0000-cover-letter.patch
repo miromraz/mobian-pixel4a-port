@@ -1,0 +1,41 @@
+From 1de7f8a789b20ed28e21f3e942de0c3aa7ede4d9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
+Date: Sun, 26 Jul 2026 01:07:45 +0200
+Subject: [PATCH 0/9] *** SUBJECT HERE ***
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+*** BLURB HERE ***
+
+Danila Tikhonov (1):
+  arm64: dts: qcom: sm7150: add venus video codec node
+
+Miroslav Mráz (8):
+  media: dt-bindings: media: add qcom,sm7150-venus
+  media: venus: hfi_msgs: parse IRIS1 firmware version string
+  media: venus: pm_helpers: support firmware-managed core power domains
+  media: venus: core: bound sys_error recovery retries
+  media: venus: core: add SM7150 resource data and compatible
+  arm64: dts: qcom: sm7150-google-sunfish: enable venus
+  media: venus: free session buffers on error-path teardown
+  media: venus: hfi_platform: honor codec blacklist on platform codecs
+    path
+
+ .../bindings/media/qcom,sm7150-venus.yaml     | 134 ++++++++++++++++++
+ .../boot/dts/qcom/sm7150-google-sunfish.dts   |   5 +
+ arch/arm64/boot/dts/qcom/sm7150.dtsi          |  16 +--
+ drivers/media/platform/qcom/venus/core.c      |  84 ++++++++++-
+ drivers/media/platform/qcom/venus/core.h      |   7 +
+ drivers/media/platform/qcom/venus/helpers.c   |  16 ++-
+ drivers/media/platform/qcom/venus/helpers.h   |   2 +-
+ drivers/media/platform/qcom/venus/hfi_msgs.c  |   8 +-
+ .../media/platform/qcom/venus/hfi_platform.c  |   3 +
+ .../media/platform/qcom/venus/pm_helpers.c    |  85 +++++++++++
+ drivers/media/platform/qcom/venus/vdec.c      |   6 +-
+ 11 files changed, 343 insertions(+), 23 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/media/qcom,sm7150-venus.yaml
+
+-- 
+2.55.0
+

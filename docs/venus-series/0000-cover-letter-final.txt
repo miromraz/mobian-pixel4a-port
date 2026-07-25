@@ -1,0 +1,78 @@
+Subject: [PATCH 0/9] media: venus: add SM7150 (Google Pixel 4a) support
+
+This series adds Venus video codec support for the Qualcomm SM7150 SoC,
+tested on the Google Pixel 4a ("sunfish") running Mobian.
+
+The SM7150 Venus is an IRIS1-generation core: its firmware reports itself
+as "14:VIDEO.IR.1.2-00053-PROD-1", but the hardware uses the classic
+V4/AR50 register layout, so HFI_VERSION_4XX and VPU_VERSION_AR50 apply.
+
+What works
+----------
+Hardware decode verified on device for H.264, VP8, VP9 and HEVC (720p
+test streams through the v4l2 stateful decoder), including from a cold
+boot. Probe and HFI communication are stable across power collapse and
+module reload.
+
+The IRIS1 firmware power contract
+---------------------------------
+The key finding of this series is the power-up contract the IRIS1
+firmware imposes before it will boot: the vcodec0 and CVP power domains
+must be software-enabled with their core/AXI branch clocks running and
+the iris clock source at a valid rate, and only then handed to firmware
+(hardware) control via dev_pm_genpd_set_hwmode(). This mirrors the
+downstream __venus_power_on() plus __enable_hw_power_collapse() path.
+Skipping any part makes the firmware bus-fault during boot (SFR
+exception FA=0xe000c510) or never reach WFI, so the later power collapse
+times out. Implemented generically behind a per-resource fw_ctrl_pds
+flag (patch 3).
+
+CVP / encode limitation
+-----------------------
+The SM7150's second hardware core (MVS1) is the CVP co-processor, not a
+second video codec, so a single decode/encode core is exposed
+(vcodec_num = 1). The encoder registers, but the IRIS1 firmware encode
+pipeline requires the CVP core, which is not supported - future work.
+
+MPEG2
+-----
+The firmware advertises MPEG2 but MPEG2 decode sessions fail on this
+firmware build (session errors right after initialization), so it is
+masked via dec_codec_blacklist (patch 5). Patch 9 makes that mechanism
+actually take effect on HFI4/HFI6 platforms, where
+hfi_platform_get_codecs() used to rebuild the codec masks from platform
+tables after parse_codecs() had applied the blacklist.
+
+Fixes found during bring-up
+---------------------------
+Patch 4 bounds the sys_error recovery retry loop, which previously
+rescheduled every 10ms forever when recovery could not resume runtime
+PM, live-locking the system. Patch 8 fixes a CMA leak where
+firmware-owned DPB buffers were never freed when a session ended after
+a firmware error; verified on device (CmaFree stable across repeated
+failed sessions, previously exhausted a 32MB pool within a handful).
+
+Firmware
+--------
+The firmware is the stock Google-signed venus.mbn from the sunfish
+vendor image (loaded via DT firmware-name); there is no redistributable
+copy in linux-firmware, matching how the other sunfish DSP firmware is
+handled.
+
+Dependencies: needs "media: qcom: venus: add codec blacklist mechanism"
+(already in mainline as of v7.2-rc).
+
+Based on earlier work by Danila Tikhonov for patches 5 and 6.
+
+Miroslav Mráz (8):
+  media: dt-bindings: media: add qcom,sm7150-venus
+  media: venus: hfi_msgs: parse IRIS1 firmware version string
+  media: venus: pm_helpers: support firmware-managed core power domains
+  media: venus: core: bound sys_error recovery retries
+  media: venus: core: add SM7150 resource data and compatible
+  arm64: dts: qcom: sm7150-google-sunfish: enable venus
+  media: venus: free session buffers on error-path teardown
+  media: venus: hfi_platform: honor codec blacklist on platform codecs path
+
+Danila Tikhonov (1):
+  arm64: dts: qcom: sm7150: add venus video codec node

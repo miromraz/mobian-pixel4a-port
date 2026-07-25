@@ -1,0 +1,157 @@
+From 2a1093367dd915bef9882902fe266ce98511cfa8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
+Date: Sat, 25 Jul 2026 22:54:05 +0200
+Subject: [PATCH 3/9] media: venus: pm_helpers: support firmware-managed core
+ power domains
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The IRIS1 firmware takes hardware control of the vcodec and CVP power
+domains during boot. It requires those domains powered, their core/AXI
+branch clocks running and the iris clock source at a valid rate before
+it starts, and then handed over to firmware (hardware) control via
+dev_pm_genpd_set_hwmode(). This mirrors the downstream
+__venus_power_on() plus __enable_hw_power_collapse() sequence.
+
+Without it the firmware faults on the bus during boot (SFR exception
+FA=0xe000c510) or never reaches WFI, so the later power collapse times
+out.
+
+Add a per-resource fw_ctrl_pds flag and two helpers,
+venus_fw_ctrl_pds_on()/venus_fw_ctrl_pds_off(), driven from
+core_power_v4() on power on and power off. On the way up the steps are
+unwound in reverse on any failure and the error is propagated so
+power-on fails cleanly. On the way down the hwmode poll failure is
+tolerated, since the firmware may legitimately have left a domain
+powered off.
+
+Signed-off-by: Miroslav Mráz <mraz.miro@seznam.cz>
+---
+ drivers/media/platform/qcom/venus/core.h      |  5 ++
+ .../media/platform/qcom/venus/pm_helpers.c    | 85 +++++++++++++++++++
+ 2 files changed, 90 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/venus/core.h b/drivers/media/platform/qcom/venus/core.h
+index 514dfb99449c..1a1c802a6956 100644
+--- a/drivers/media/platform/qcom/venus/core.h
++++ b/drivers/media/platform/qcom/venus/core.h
+@@ -86,6 +86,11 @@ struct venus_resources {
+ 	unsigned int vcodec_num;
+ 	const u32 dec_codec_blacklist;
+ 	const u32 enc_codec_blacklist;
++	/*
++	 * hand vcodec/CVP power domains to firmware hardware control across
++	 * fw boot; the fw requires them powered and clocked when it boots
++	 */
++	bool fw_ctrl_pds;
+ 	const char * const resets[VIDC_RESETS_NUM_MAX];
+ 	unsigned int resets_num;
+ 	enum hfi_version hfi_version;
+diff --git a/drivers/media/platform/qcom/venus/pm_helpers.c b/drivers/media/platform/qcom/venus/pm_helpers.c
+index f0269524ac70..443c3cfbed93 100644
+--- a/drivers/media/platform/qcom/venus/pm_helpers.c
++++ b/drivers/media/platform/qcom/venus/pm_helpers.c
+@@ -1020,6 +1020,79 @@ static void core_put_v4(struct venus_core *core)
+ {
+ }
+ 
++/*
++ * The IRIS1 firmware takes hardware control of the vcodec and CVP power
++ * domains during boot. It requires them powered, clocked and their clock
++ * source running at a valid rate before it starts, and then handed over to
++ * firmware (hardware) control. This mirrors the downstream __venus_power_on()
++ * plus __enable_hw_power_collapse() sequence; without it the firmware faults
++ * on the bus during boot (SFR exception FA=0xe000c510) or never reaches WFI,
++ * so power collapse later times out.
++ */
++static int venus_fw_ctrl_pds_on(struct venus_core *core)
++{
++	const struct venus_resources *res = core->res;
++	struct device **pds = core->pmdomains->pd_devs;
++	struct device *dev = core->dev;
++	int ret;
++
++	ret = dev_pm_opp_set_rate(dev, res->freq_tbl[res->freq_tbl_size - 1].freq);
++	if (ret)
++		return ret;
++
++	ret = pm_runtime_get_sync(pds[1]);
++	if (ret < 0)
++		goto err_put_vcodec0;
++
++	ret = pm_runtime_get_sync(pds[2]);
++	if (ret < 0)
++		goto err_put_cvp;
++
++	ret = vcodec_clks_enable(core, core->vcodec0_clks);
++	if (ret)
++		goto err_put_cvp;
++
++	ret = vcodec_clks_enable(core, core->vcodec1_clks);
++	if (ret)
++		goto err_disable_vcodec0_clks;
++
++	ret = dev_pm_genpd_set_hwmode(pds[1], true);
++	if (ret)
++		goto err_disable_vcodec1_clks;
++
++	ret = dev_pm_genpd_set_hwmode(pds[2], true);
++	if (ret)
++		goto err_hwmode_vcodec0_off;
++
++	return 0;
++
++err_hwmode_vcodec0_off:
++	dev_pm_genpd_set_hwmode(pds[1], false);
++err_disable_vcodec1_clks:
++	vcodec_clks_disable(core, core->vcodec1_clks);
++err_disable_vcodec0_clks:
++	vcodec_clks_disable(core, core->vcodec0_clks);
++err_put_cvp:
++	pm_runtime_put_sync(pds[2]);
++err_put_vcodec0:
++	pm_runtime_put_sync(pds[1]);
++
++	return ret;
++}
++
++static void venus_fw_ctrl_pds_off(struct venus_core *core)
++{
++	struct device **pds = core->pmdomains->pd_devs;
++
++	/* Poll failure is expected if the firmware left a domain off; ignore. */
++	dev_pm_genpd_set_hwmode(pds[1], false);
++	dev_pm_genpd_set_hwmode(pds[2], false);
++	vcodec_clks_disable(core, core->vcodec1_clks);
++	vcodec_clks_disable(core, core->vcodec0_clks);
++	pm_runtime_put_sync(pds[2]);
++	pm_runtime_put_sync(pds[1]);
++}
++
+ static int core_power_v4(struct venus_core *core, int on)
+ {
+ 	struct device *dev = core->dev;
+@@ -1045,7 +1118,19 @@ static int core_power_v4(struct venus_core *core, int on)
+ 		ret = core_clks_enable(core);
+ 		if (ret < 0 && pmctrl)
+ 			pm_runtime_put_sync(pmctrl);
++
++		if (!ret && core->res->fw_ctrl_pds) {
++			ret = venus_fw_ctrl_pds_on(core);
++			if (ret) {
++				core_clks_disable(core);
++				if (pmctrl)
++					pm_runtime_put_sync(pmctrl);
++			}
++		}
+ 	} else {
++		if (core->res->fw_ctrl_pds)
++			venus_fw_ctrl_pds_off(core);
++
+ 		/* Drop the performance state vote */
+ 		if (core->opp_pmdomain)
+ 			dev_pm_opp_set_rate(dev, 0);
+-- 
+2.55.0
+

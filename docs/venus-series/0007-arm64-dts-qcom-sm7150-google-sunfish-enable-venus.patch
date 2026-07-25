@@ -1,0 +1,36 @@
+From 39d773e0456f88a2f2c7a9b369f84f51c0e2c0b2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
+Date: Sat, 25 Jul 2026 22:56:28 +0200
+Subject: [PATCH 7/9] arm64: dts: qcom: sm7150-google-sunfish: enable venus
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Enable the Venus video codec on the Google Pixel 4a and point it at the
+firmware. The firmware image is taken from the device's stock vendor
+partition.
+
+Signed-off-by: Miroslav Mráz <mraz.miro@seznam.cz>
+---
+ arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dts | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dts b/arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dts
+index f1273f9fd398..ed72322a2c94 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dts
++++ b/arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dts
+@@ -1326,6 +1326,11 @@ &usb_1_qmpphy_out {
+ 	remote-endpoint = <&pm6150_typec_mux_in>;
+ };
+ 
++&venus {
++	firmware-name = "qcom/sm7150/google/sunfish/venus.mbn";
++	status = "okay";
++};
++
+ &wifi {
+ 	vdd-0.8-cx-mx-supply = <&vdd_wcss_cx>;
+ 	vdd-1.8-xo-supply = <&vreg_l1c_1p8>;
+-- 
+2.55.0
+

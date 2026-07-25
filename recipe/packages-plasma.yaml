@@ -1,0 +1,48 @@
+{{- $architecture := or .architecture "arm64" -}}
+
+architecture: {{ $architecture }}
+
+actions:
+  - action: apt
+    recommends: false
+    description: Install Plasma Mobile + Plasma Desktop packages
+    packages:
+      - plasma-mobile
+      - plasma-desktop
+      - sddm
+      # Display configuration KCM (the "Display" tab in System Settings / Plasma
+      # Mobile settings); a stripped recommends, only the lib was pulled otherwise.
+      - kscreen
+      # pkexec is a separate package in Debian 13; needed by the Switch Mode launcher
+      - pkexec
+      # Without the kirigami-addons formcard QML module (a stripped recommends),
+      # the Plasma Mobile first-run wizard pages render blank. Pulls -datetime.
+      - qml6-module-org-kde-kirigamiaddons-formcard
+      # Keyboard haptics: Debian's maliit uses Qt5Feedback, whose stock backend (mmk)
+      # only plays sound. hfd-service + its Qt5Feedback plugin provide the vibration
+      # backend (VibratorFF -> drv2624). AccountsService AllowGeneralVibration defaults
+      # true once accounts-daemon loads hfd's extension. Pulls libdeviceinfo0,libyaml-cpp.
+      - hfd-service
+      - libqt5feedback5-hfd
+      # Screenshot tool used by /usr/local/bin/screenshot (patch.sh). KWin only authorizes
+      # whitelisted binaries for ScreenShot2; spectacle is the supported capturer.
+      - kde-spectacle
+      # dconf CLI: patch.sh runs `dconf update` to compile the keyboard-haptics gsetting
+      # default (/etc/dconf/db/local). Without the CLI the compile silently no-ops and
+      # key-press-feedback stays unset.
+      - dconf-cli
+
+  # The full Mobian Plasma Mobile environment: the actual phone APPS (angelfish, koko,
+  # kclock, okular, phonebook, qmlkonsole, PIM, ...) + telephony. `plasma-mobile` alone is
+  # only the shell, so without this the app drawer is nearly empty. These apps are pulled
+  # via Recommends, so this action must NOT disable recommends.
+  - action: apt
+    recommends: true
+    description: Install the full Mobian Plasma Mobile app set
+    packages:
+      - mobian-plasma-mobile
+
+  - action: run
+    description: Disable getty in the Plasma environment
+    chroot: true
+    command: systemctl disable getty@.service

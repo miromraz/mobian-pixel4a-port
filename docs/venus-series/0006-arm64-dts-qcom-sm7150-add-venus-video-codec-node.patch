@@ -1,0 +1,65 @@
+From c7152ca31267635154587fa4c70c09a207f48414 Mon Sep 17 00:00:00 2001
+From: Danila Tikhonov <danila@jiaxyga.com>
+Date: Sat, 25 Jul 2026 22:56:21 +0200
+Subject: [PATCH 6/9] arm64: dts: qcom: sm7150: add venus video codec node
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add the Venus video codec node for the SM7150, wired to the video clock
+controller, the vcodec0 and CVP power domains and clocks, and the CX rail
+via OPP. The node is left disabled; boards enable it and supply the
+firmware. The CVP core's clocks and power domain are named cvp_* / cvp to
+reflect the hardware.
+
+Signed-off-by: Danila Tikhonov <danila@jiaxyga.com>
+[mraz: rename CVP clocks/domains, drop resets, trim OPPs above 365 MHz]
+Signed-off-by: Miroslav Mráz <mraz.miro@seznam.cz>
+---
+ arch/arm64/boot/dts/qcom/sm7150.dtsi | 16 +++-------------
+ 1 file changed, 3 insertions(+), 13 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150.dtsi b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+index 8944d7c4a7cc..e97f30ebf1f2 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150.dtsi
+@@ -3584,8 +3584,8 @@ venus: video-codec@aa00000 {
+ 				      "bus",
+ 				      "vcodec0_core",
+ 				      "vcodec0_bus",
+-				      "vcodec1_core",
+-				      "vcodec1_bus";
++				      "cvp_core",
++				      "cvp_bus";
+ 
+ 			interconnects = <&gem_noc MASTER_AMPSS_M0 QCOM_ICC_TAG_ALWAYS
+ 					 &config_noc SLAVE_VENUS_CFG QCOM_ICC_TAG_ALWAYS>,
+@@ -3600,7 +3600,7 @@ &config_noc SLAVE_VENUS_CFG QCOM_ICC_TAG_ALWAYS>,
+ 					<&rpmhpd RPMHPD_CX>;
+ 			power-domain-names = "venus",
+ 					     "vcodec0",
+-					     "vcodec1",
++					     "cvp",
+ 					     "cx";
+ 
+ 			operating-points-v2 = <&venus_opp_table>;
+@@ -3636,16 +3636,6 @@ opp-365000000 {
+ 					opp-hz = /bits/ 64 <365000000>;
+ 					required-opps = <&rpmhpd_opp_svs_l1>;
+ 				};
+-
+-				opp-444000000 {
+-					opp-hz = /bits/ 64 <444000000>;
+-					required-opps = <&rpmhpd_opp_nom>;
+-				};
+-
+-				opp-533000000 {
+-					opp-hz = /bits/ 64 <533000000>;
+-					required-opps = <&rpmhpd_opp_turbo>;
+-				};
+ 			};
+ 		};
+ 
+-- 
+2.55.0
+

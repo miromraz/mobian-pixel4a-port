@@ -1,0 +1,132 @@
+From dd4844f93cb223526002fc1148088488e0ddf9cb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
+Date: Sun, 26 Jul 2026 00:28:35 +0200
+Subject: [PATCH 8/9] media: venus: free session buffers on error-path teardown
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When a stateful decode session fails at the firmware level (e.g. MPEG2
+on IRIS1.2 firmware, where the firmware rejects the session and emits a
+"no valid instance(pkt session_id:X, pkt:21001)" HFI_MSG_EVENT_NOTIFY
+for an instance it no longer tracks), the DPB buffers handed to the
+firmware are never returned to the driver. They stay marked
+owned_by == FIRMWARE and venus_helper_free_dpb_bufs() unconditionally
+skips them, so the underlying dma_alloc_attrs() CMA allocations are
+leaked on every failed session.
+
+Because these allocations are not devm-managed, the leak survives a
+module unload/reload of venus_dec/venus_core: nothing is left holding a
+reference that a device release would free. On a device with a small
+CMA pool (CmaTotal 32768 kB) a handful of failed MPEG2 sessions drives
+CmaFree to 0, after which any subsequent decode/encode session fails at
+VIDIOC_REQBUFS with "Failed to allocate required memory".
+
+At final session teardown the firmware session is stopped or aborted
+and will never release those buffers, so keeping the firmware-owned
+skip only leaks them. Add a force flag to venus_helper_free_dpb_bufs()
+and set it on the teardown paths (vdec_session_release() and
+venus_helper_vb2_stop_streaming()) so all DPB buffers are freed there,
+while mid-session paths (dynamic resolution change, allocation-failure
+cleanup) keep the existing behaviour and rely on the buffer-release
+reference event to return firmware-owned buffers.
+
+Signed-off-by: Miroslav Mráz <mraz.miro@seznam.cz>
+---
+ drivers/media/platform/qcom/venus/helpers.c | 16 ++++++++++++----
+ drivers/media/platform/qcom/venus/helpers.h |  2 +-
+ drivers/media/platform/qcom/venus/vdec.c    |  6 +++---
+ 3 files changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/venus/helpers.c b/drivers/media/platform/qcom/venus/helpers.c
+index 747c388fe25f..695f6d26215b 100644
+--- a/drivers/media/platform/qcom/venus/helpers.c
++++ b/drivers/media/platform/qcom/venus/helpers.c
+@@ -142,12 +142,20 @@ int venus_helper_queue_dpb_bufs(struct venus_inst *inst)
+ }
+ EXPORT_SYMBOL_GPL(venus_helper_queue_dpb_bufs);
+ 
+-int venus_helper_free_dpb_bufs(struct venus_inst *inst)
++int venus_helper_free_dpb_bufs(struct venus_inst *inst, bool force)
+ {
+ 	struct intbuf *buf, *n;
+ 
+ 	list_for_each_entry_safe(buf, n, &inst->dpbbufs, list) {
+-		if (buf->owned_by == FIRMWARE)
++		/*
++		 * During final session teardown the firmware is stopped or
++		 * aborted and will never hand its DPB buffers back, so free
++		 * them unconditionally to avoid leaking CMA memory. Mid-session
++		 * (e.g. dynamic resolution change) firmware-owned buffers must
++		 * still be kept as they are returned later via a buffer-release
++		 * reference event.
++		 */
++		if (!force && buf->owned_by == FIRMWARE)
+ 			continue;
+ 		free_dpb_buf(inst, buf);
+ 	}
+@@ -225,7 +233,7 @@ int venus_helper_alloc_dpb_bufs(struct venus_inst *inst)
+ 
+ fail:
+ 	kfree(buf);
+-	venus_helper_free_dpb_bufs(inst);
++	venus_helper_free_dpb_bufs(inst, false);
+ 	return ret;
+ }
+ EXPORT_SYMBOL_GPL(venus_helper_alloc_dpb_bufs);
+@@ -1562,7 +1570,7 @@ void venus_helper_vb2_stop_streaming(struct vb2_queue *q)
+ 		if (ret)
+ 			hfi_session_abort(inst);
+ 
+-		venus_helper_free_dpb_bufs(inst);
++		venus_helper_free_dpb_bufs(inst, true);
+ 
+ 		venus_pm_load_scale(inst);
+ 		INIT_LIST_HEAD(&inst->registeredbufs);
+diff --git a/drivers/media/platform/qcom/venus/helpers.h b/drivers/media/platform/qcom/venus/helpers.h
+index 358e4f39c9c0..c6f1d083695f 100644
+--- a/drivers/media/platform/qcom/venus/helpers.h
++++ b/drivers/media/platform/qcom/venus/helpers.h
+@@ -57,7 +57,7 @@ int venus_helper_get_out_fmts(struct venus_inst *inst, u32 fmt, u32 *out_fmt,
+ 			      u32 *out2_fmt, bool ubwc);
+ bool venus_helper_check_format(struct venus_inst *inst, u32 v4l2_pixfmt);
+ int venus_helper_alloc_dpb_bufs(struct venus_inst *inst);
+-int venus_helper_free_dpb_bufs(struct venus_inst *inst);
++int venus_helper_free_dpb_bufs(struct venus_inst *inst, bool force);
+ int venus_helper_intbufs_alloc(struct venus_inst *inst);
+ int venus_helper_intbufs_free(struct venus_inst *inst);
+ int venus_helper_intbufs_realloc(struct venus_inst *inst);
+diff --git a/drivers/media/platform/qcom/venus/vdec.c b/drivers/media/platform/qcom/venus/vdec.c
+index daa8f56610c7..0d042ac08849 100644
+--- a/drivers/media/platform/qcom/venus/vdec.c
++++ b/drivers/media/platform/qcom/venus/vdec.c
+@@ -1105,7 +1105,7 @@ static int vdec_start_capture(struct venus_inst *inst)
+ 	return 0;
+ 
+ free_dpb_bufs:
+-	venus_helper_free_dpb_bufs(inst);
++	venus_helper_free_dpb_bufs(inst, false);
+ err:
+ 	return ret;
+ }
+@@ -1248,7 +1248,7 @@ static int vdec_stop_capture(struct venus_inst *inst)
+ 	case VENUS_DEC_STATE_DRC:
+ 		ret = hfi_session_flush(inst, HFI_FLUSH_OUTPUT, true);
+ 		inst->codec_state = VENUS_DEC_STATE_CAPTURE_SETUP;
+-		venus_helper_free_dpb_bufs(inst);
++		venus_helper_free_dpb_bufs(inst, false);
+ 		break;
+ 	default:
+ 		break;
+@@ -1337,7 +1337,7 @@ static void vdec_session_release(struct venus_inst *inst)
+ 	if (abort)
+ 		hfi_session_abort(inst);
+ 
+-	venus_helper_free_dpb_bufs(inst);
++	venus_helper_free_dpb_bufs(inst, true);
+ 	venus_pm_load_scale(inst);
+ 	INIT_LIST_HEAD(&inst->registeredbufs);
+ 	mutex_unlock(&inst->lock);
+-- 
+2.55.0
+

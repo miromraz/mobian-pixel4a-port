@@ -1,0 +1,42 @@
+From 02b97165e1fd299cda0d66803a45edd98b272256 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
+Date: Sat, 25 Jul 2026 22:53:26 +0200
+Subject: [PATCH 2/9] media: venus: hfi_msgs: parse IRIS1 firmware version
+ string
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Venus firmware on the SM7150 reports its version as
+"14:VIDEO.IR.1.2-00053-PROD-1", which none of the existing sscanf patterns
+match, so the version was left unparsed. Add a fourth pattern for the
+"14:VIDEO.IR.%u.%u-%u" form and, when nothing matches, print the
+unrecognized string in the error path to ease bring-up of future firmware.
+
+Signed-off-by: Miroslav Mráz <mraz.miro@seznam.cz>
+---
+ drivers/media/platform/qcom/venus/hfi_msgs.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/qcom/venus/hfi_msgs.c b/drivers/media/platform/qcom/venus/hfi_msgs.c
+index 47b99d5b5af7..537e0dc45e57 100644
+--- a/drivers/media/platform/qcom/venus/hfi_msgs.c
++++ b/drivers/media/platform/qcom/venus/hfi_msgs.c
+@@ -321,7 +321,13 @@ sys_get_prop_image_version(struct venus_core *core,
+ 	if (ret)
+ 		goto done;
+ 
+-	dev_err(dev, VDBGL "error reading F/W version\n");
++	ret = sscanf(img_ver, "14:VIDEO.IR.%u.%u-%u",
++		     &core->venus_ver.major, &core->venus_ver.minor, &core->venus_ver.rev);
++	if (ret)
++		goto done;
++
++	dev_err(dev, VDBGL "error reading F/W version (str: %.*s)\n",
++		VER_STR_SZ, img_ver);
+ 	return;
+ 
+ done:
+-- 
+2.55.0
+

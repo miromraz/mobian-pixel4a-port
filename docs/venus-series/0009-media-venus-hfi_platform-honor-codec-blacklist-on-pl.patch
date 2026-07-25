@@ -1,0 +1,40 @@
+From 1de7f8a789b20ed28e21f3e942de0c3aa7ede4d9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
+Date: Sun, 26 Jul 2026 01:06:53 +0200
+Subject: [PATCH 9/9] media: venus: hfi_platform: honor codec blacklist on
+ platform codecs path
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On HFI version 4 and 6 platforms hfi_platform_get_codecs() rebuilds
+enc_codecs/dec_codecs from the static platform capability tables,
+overwriting the firmware-parsed values that parse_codecs() already
+applied the per-resource codec blacklist to. As a result
+dec_codec_blacklist/enc_codec_blacklist only ever had an effect on
+HFI version 1 platforms.
+
+Apply the blacklist on the platform path as well.
+
+Signed-off-by: Miroslav Mráz <mraz.miro@seznam.cz>
+---
+ drivers/media/platform/qcom/venus/hfi_platform.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/venus/hfi_platform.c b/drivers/media/platform/qcom/venus/hfi_platform.c
+index cde7f93045ac..816991100b88 100644
+--- a/drivers/media/platform/qcom/venus/hfi_platform.c
++++ b/drivers/media/platform/qcom/venus/hfi_platform.c
+@@ -92,6 +92,9 @@ hfi_platform_get_codecs(struct venus_core *core, u32 *enc_codecs,
+ 		*dec_codecs &= ~HFI_VIDEO_CODEC_VP8;
+ 	}
+ 
++	*dec_codecs &= ~core->res->dec_codec_blacklist;
++	*enc_codecs &= ~core->res->enc_codec_blacklist;
++
+ 	return 0;
+ }
+ 
+-- 
+2.55.0
+
