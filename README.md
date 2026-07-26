@@ -106,9 +106,21 @@ fork plus this port's patches; `kernel-config-*.txt` is the exact config used.
 ### Step 3 — Flash
 
 The stock bootloader **cannot** boot a mainline kernel directly, so the chain is
-`ABL → U-Boot → systemd-boot → kernel`. You need a U-Boot image built for sunfish on
-the `boot` partition, flashed to **both** slots. Flash it exactly as built — do not
-repackage it into a different Android boot-image header version.
+`ABL → U-Boot → systemd-boot → kernel`. U-Boot goes on the `boot` partition, in **both**
+slots.
+
+> **Honest gap:** the image we boot is U-Boot for sunfish — `u-boot-nodtb.bin` with a
+> `google,sunfish` / `qcom,sm7150` device tree appended, wrapped as an **Android boot
+> image header v0, page size 4096**. It came to us as a prebuilt binary and we have
+> *not* verified a from-source build recipe, so we can't yet tell you "run these
+> commands". The likely upstream is the qcom mainline U-Boot work used by the
+> postmarketOS sdm845/sm7150 ports and the
+> [sm7150-mainline](https://github.com/sm7150-mainline) project — ask there. **If you
+> build one from source, please contribute the recipe; it's the biggest hole in this
+> guide.**
+>
+> Flash it **exactly as built**. Repackaging the same U-Boot into a v2 boot-image header
+> produced a non-booting device for us — header v0 or nothing.
 
 ```sh
 fastboot flash boot_a u-boot.img
