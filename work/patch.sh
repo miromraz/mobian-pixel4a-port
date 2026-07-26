@@ -324,6 +324,12 @@ if [ -d kernel ]; then
   # owned by the LPASS macros, so post-SSR register access there is an external abort.
   install -Dm644 kernel/soundwire-qcom.ko \
     "rmnt/lib/modules/$KVER/kernel/drivers/soundwire/soundwire-qcom.ko"
+  # i2c-qcom-cci never armed its autosuspend timer, so the camera control interface sat
+  # runtime-active with its clocks on for the whole uptime (nothing uses the camera, so the
+  # first get/put that would have idled it never came). That held 8 camcc clocks and kept
+  # the RPMh XO vote up: bi_tcxo prepare count 93 -> 15 with this in place.
+  install -Dm644 kernel/i2c-qcom-cci.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/i2c/busses/i2c-qcom-cci.ko"
   depmod -b rmnt "$KVER"
   install -Dm644 kernel/asound.state rmnt/var/lib/alsa/asound.state
   # UCM2 profile: PipeWire/WirePlumber pick up the card as a desktop sink
