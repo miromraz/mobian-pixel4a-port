@@ -244,6 +244,28 @@ if [ -d ipa ]; then
   ln -sf /etc/systemd/system/ipa-late-load.service \
     rmnt/etc/systemd/system/multi-user.target.wants/ipa-late-load.service
 fi
+# --- Idle power: bind venus so rpmhpd/interconnect sync_state() can fire.
+# venus is blacklisted for autoload, so nothing ever binds aa00000.video-codec, and it is the
+# last unbound consumer of rpmhpd + the config/mmss/gem NoCs. While a provider has an unbound
+# consumer, sync_state() never runs: rpmhpd_aggregate_corner() then pins EVERY rail to its
+# maximum corner in the RPMh SLEEP set as well as the active set, and the NoCs keep the
+# boot-time INT_MAX bandwidth clamp. Measured effect of loading it: state_synced 0 -> 1, every
+# INT_MAX gone, cx/mx down to corner 64, and DDR DVFS starts actually switching frequency
+# (was count:1 on two frequencies for a whole boot). Loaded late so a video firmware fault
+# leaves the phone up and reachable instead of wedging the boot.
+{
+  printf '[Unit]\n'
+  printf 'Description=Bind venus so rpmhpd/interconnect sync_state() can fire\n'
+  printf 'After=systemd-user-sessions.service sshd.service\n'
+  printf '[Service]\n'
+  printf 'Type=oneshot\n'
+  printf 'RemainAfterExit=yes\n'
+  printf 'ExecStart=/sbin/modprobe venus_dec\n'
+  printf '[Install]\n'
+  printf 'WantedBy=multi-user.target\n'
+} > rmnt/etc/systemd/system/venus-rpmhpd-sync.service
+ln -sf /etc/systemd/system/venus-rpmhpd-sync.service \
+  rmnt/etc/systemd/system/multi-user.target.wants/venus-rpmhpd-sync.service
 # --- hexagonrpcd sensor daemons: serve the ADSP root PD + sensors PD FastRPC endpoints so the
 # SEE/CHRE sensor firmware brings up (replaces the old stop-adsp-ssr workaround, now that the
 # sar.cc:27 SSR loop is fixed at the source via the smp2p sleepstate dtb entry added below).
