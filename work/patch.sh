@@ -32,6 +32,14 @@ printf 'uhid\nuinput\njoydev\n' > rmnt/etc/modules-load.d/bluetooth-input.conf
 # (Disconnect-first is safe; only the forcible down-with-live-link path hits this.)
 mkdir -p rmnt/etc/udev/rules.d
 printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/control}="on"\n' > rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
+# Same UART, second problem: gpio41 (its RX line) is also wired up as a dedicated wake
+# IRQ. TLMM deliberately keeps RAW_STATUS_EN set for edge IRQs while they are masked, so
+# every byte of BT traffic latches an edge that nothing ever acks. dev_pm_arm_wake_irq()
+# then arms an already-pending IRQ at dpm_suspend_noirq and irq_pm_handle_wakeup() aborts
+# the suspend ~1s in, every single time (pm_wakeup_irq reported IRQ 152). Arming is gated
+# on device_may_wakeup(), so clearing this is enough. Costs BT wake-from-suspend, which
+# has never worked on this port anyway.
+printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/wakeup}="disabled"\n' >> rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
 # WCD9375 audio fix: the SoundWire paths program their data ports at stream
 # prepare using no-PM register transfers, which -EIO unless the SWR bus clock
 # (from the rx/tx macro, gated by the SoundWire controller's iface clock) is
@@ -265,6 +273,35 @@ if [ -d kernel ]; then
     "rmnt/lib/modules/$KVER/kernel/sound/soc/codecs/snd-soc-rt5514.ko"
   install -Dm644 kernel/snd-soc-rl6231.ko \
     "rmnt/lib/modules/$KVER/kernel/sound/soc/codecs/snd-soc-rl6231.ko"
+  # q6dsp-lpass-clocks publishes its drvdata before registering clocks; without
+  # that, an ADSP restart re-parents the still-prepared LPASS orphan clocks and
+  # calls .prepare with a NULL drvdata. That oops happens under the clock
+  # framework's prepare_lock, so it also wedges UFS runtime-resume and the rootfs.
+  install -Dm644 kernel/snd-q6dsp-common.ko \
+    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/qdsp6/snd-q6dsp-common.ko"
+  # Suspend fix. The bootloader leaves the APSS watchdog running, so qcom-wdt sets
+  # WDOG_HW_RUNNING and the watchdog core pings it from a kernel worker. Workers are
+  # frozen while suspended and the stock qcom_wdt_suspend() only stops the hardware once
+  # userspace has opened /dev/watchdog, so it kept biting mid-suspend and resetting the
+  # phone -- which looked exactly like a broken resume. NB this module is listed in
+  # modules-load.d, so it is loaded from the INITRAMFS; the update-initramfs below is what
+  # actually makes this take effect, not the copy into /lib/modules.
+  install -Dm644 kernel/qcom-wdt.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/watchdog/qcom-wdt.ko"
+  # Rest of the suspend chain, all autoloaded (no modules-load.d entry needed).
+  # smp2p_sleepstate tells the ADSP over SMP2P that we are going down, so it stops
+  # handing us sensor reverse-RPC we can no longer service; without it the DSP takes a
+  # fatal error on the requests that were already in flight when the freezer ran.
+  install -Dm644 kernel/smp2p_sleepstate.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/soc/qcom/smp2p_sleepstate.ko"
+  # fastrpc freezes in its invoke wait instead of aborting it, so a task sitting in a
+  # FastRPC call is a freezable sleep rather than an -ERESTARTSYS the caller mishandles.
+  install -Dm644 kernel/fastrpc.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/misc/fastrpc.ko"
+  # soundwire-qcom stops touching the hardware once the ADSP is gone; the bus clock is
+  # owned by the LPASS macros, so post-SSR register access there is an external abort.
+  install -Dm644 kernel/soundwire-qcom.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/soundwire/soundwire-qcom.ko"
   depmod -b rmnt "$KVER"
   install -Dm644 kernel/asound.state rmnt/var/lib/alsa/asound.state
   # UCM2 profile: PipeWire/WirePlumber pick up the card as a desktop sink
