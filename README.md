@@ -56,27 +56,29 @@ second device, not your daily driver.
 
 ### Step 1 — Get the vendor firmware off your own device
 
-Some hardware only works with Qualcomm/Google/Cirrus firmware that is proprietary and
-**not redistributable**, so this repo does not contain it. You have to supply it from
-your own phone (or from a factory image you downloaded from Google).
+Some hardware only works with proprietary Qualcomm/Google/Cirrus firmware, which this
+repo does not contain.
 
-Copy these out of the stock system, keeping the paths:
+**The easy path:** almost all of it is already published by the SM7150 community as
+[`sm7150-mainline/firmware-google-sunfish`](https://github.com/sm7150-mainline/firmware-google-sunfish)
+(also packaged for postmarketOS as
+[`firmware-google-sunfish`](https://pkgs.postmarketos.org/package/master/postmarketos/aarch64/firmware-google-sunfish)).
+That covers the DSP, modem, WiFi, Bluetooth, video and audio-calibration blobs — the
+`lib/firmware/` and `usr/share/qcom/` trees drop straight into the rootfs:
 
 ```
-/lib/firmware/qcom/sm7150/google/sunfish/
-    adsp.b*  adsp.mbn  adspr.jsn  adsps.jsn  adspua.jsn   # audio + sensor DSP
-    cdsp.b*  cdsp.mbn  cdspr.jsn                          # compute DSP
-    modem*   modemr.jsn  modemuw.jsn                      # modem
-    venus.mbn                                             # video decode
-    ipa_fws.b*                                            # network offload
-/lib/firmware/qca/
-    crbtfw01.tlv  crnv01.bin                              # Bluetooth
-/lib/firmware/
-    wlanmdsp.mbn                                          # WiFi
+lib/firmware/qcom/sm7150/google/sunfish/   adsp.mbn cdsp.mbn venus.mbn modem.mbn
+                                           wlanmdsp.mbn ipa_fws.mbn a615_zap.mbn
+                                           adspr.jsn adsps.jsn adspua.jsn
+                                           cdspr.jsn modemr.jsn modemuw.jsn
+lib/firmware/qca/                          crbtfw01.tlv crnv01.bin      # Bluetooth
+usr/share/qcom/sm7150/Google/sunfish/      ACDB audio calibration + ADSP modules
 ```
 
-Optional — only for full speaker loudness (the speaker-protection DSP). Without it
-audio still works, just quieter:
+**The one exception — you must supply this yourself.** The Cirrus speaker-protection
+firmware is *not* in that repo, because it's Cirrus DSP code plus Google's per-device
+tuning. Copy it off your own phone (or a factory image). It is **optional**: without it
+audio still works, just quieter, because the amplifier runs without its protection DSP.
 
 ```
 /lib/firmware/cirrus/
@@ -109,15 +111,24 @@ The stock bootloader **cannot** boot a mainline kernel directly, so the chain is
 `ABL → U-Boot → systemd-boot → kernel`. U-Boot goes on the `boot` partition, in **both**
 slots.
 
-> **Honest gap:** the image we boot is U-Boot for sunfish — `u-boot-nodtb.bin` with a
-> `google,sunfish` / `qcom,sm7150` device tree appended, wrapped as an **Android boot
-> image header v0, page size 4096**. It came to us as a prebuilt binary and we have
-> *not* verified a from-source build recipe, so we can't yet tell you "run these
-> commands". The likely upstream is the qcom mainline U-Boot work used by the
-> postmarketOS sdm845/sm7150 ports and the
-> [sm7150-mainline](https://github.com/sm7150-mainline) project — ask there. **If you
-> build one from source, please contribute the recipe; it's the biggest hole in this
-> guide.**
+The image we boot came from **[Tauchgang](https://gitlab.postmarketos.org/tauchgang)**,
+postmarketOS's initiative for stable U-Boot releases on Linux Mobile devices — a small
+patchset kept deliberately close to upstream U-Boot. Its porting guide lives in
+`tauchgang-ci/doc/porting.md`, and there's a `#tauchgang:postmarketos.org` Matrix room.
+
+Upstream U-Boot builds Qualcomm phones generically these days (no per-device defconfig):
+
+```sh
+make CROSS_COMPILE=aarch64-linux-gnu- O=.output qcom_defconfig qcom-phone.config
+```
+
+Linaro also publishes Qualcomm U-Boot releases at
+[git.codelinaro.org/linaro/qcomlt/u-boot](https://git.codelinaro.org/linaro/qcomlt/u-boot/-/releases).
+
+> **What we can verify about our image:** it is `u-boot-nodtb.bin` with a
+> `google,sunfish` / `qcom,sm7150` device tree appended, packaged as an **Android boot
+> image header v0, page size 4096**. We have *not* re-derived the exact build and
+> packaging steps for sunfish from scratch, so if you do, please contribute them.
 >
 > Flash it **exactly as built**. Repackaging the same U-Boot into a v2 boot-image header
 > produced a non-booting device for us — header v0 or nothing.
