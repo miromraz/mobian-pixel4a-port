@@ -1,185 +1,185 @@
-# Mobian Pixel 4a Port (sunfish / SM7150)
+# Mobian on the Google Pixel 4a (`sunfish`, SM7150)
 
-Booting **Mobian (Debian 13 "trixie")** on the **Google Pixel 4a** (codename
-`sunfish`, Qualcomm SM7150) on a **mainline Linux kernel** (sm7150-mainline fork,
-v7.1-rc3), with reverse-engineered drivers for the device-specific hardware.
-Ships **Plasma Mobile + Desktop** with a one-tap mode toggle (Phosh still buildable).
+Debian 13 "trixie" + **Plasma Mobile/Desktop** running on a **mainline Linux kernel**
+on the Pixel 4a, with drivers reverse-engineered for this device.
 
-> Status: **boots to the greeter and stays up.** See [Status](#status) below.
+**What it feels like today:** a small Linux computer that boots reliably, has working
+display, WiFi, Bluetooth, sound, and sensors. **It is not yet a usable phone** — there
+is no mobile data and no camera, and battery life is mediocre. Treat it as a
+second device, not your daily driver.
 
-This repo holds the **reproducible source** — build scripts, the debos recipe, the
-initramfs hooks, the kernel config, and the porting notes. It deliberately does **not**
-contain the built images, kernel modules, or proprietary firmware blobs (see
-[FIRMWARE.md](FIRMWARE.md)).
+> ⚠️ **This will erase your phone**, requires an unlocked bootloader, and is not
+> supported by Google or Debian. You are expected to be comfortable with `fastboot`
+> and recovering a device that won't boot. Nothing here is guaranteed.
 
 ---
 
-## Status
+## What works
 
-| Component | State |
+| | |
 |-|-|
-| Boot | ✅ stable (zero resets after the IPA fix) |
-| Desktop environment | ✅ **Plasma Mobile + Desktop (6.6.5)** with a one-tap Mobile↔Desktop toggle (SDDM autologin, per-mode orientation, keyboard haptics); Phosh still buildable |
-| Display / GPU (a630, DPU) | ✅ `a630_sqe.fw` + `a630_gmu.bin` load, DPU up |
-| USB (gadget NCM + ACM) | ✅ used as the debug channel |
-| Bluetooth (WCN3990) | ✅ `hci0` UP RUNNING — BD address from DT `local-bd-address` (WCN3990 has none in NVM), injected into the boot dtb by `patch.sh`; BLE-HID via `uhid` autoload; BT-off-while-connected reset fixed (keep BT geni UART runtime-active) |
-| Watchdog (qcom APSS) | ✅ handled (kernel-core auto-ping) |
-| A/B slot persistence | ✅ `qbootctl -m` oneshot at boot (`qbootctl-mark.service`) |
-| WiFi (WCN3990 / ath10k_snoc) | ✅ `wlan0` scans 2.4/5 GHz — qcom QMI stack (`qrtr-ns` + `tqftpserv` + `rmtfs` + `pd-mapper`) starts the WLAN PD, then single `modprobe ath10k_snoc` after WLFW |
-| Sensors (accel, ALS, proximity) | ✅ **wired into the desktop** via the ADSP Sensor Core — the `sleepstate` SMP2P entry + `hexagonrpcd` keep the SEE sensor firmware alive (no more `sar.cc:27`), then `iio-sensor-proxy` 3.9 reads them over QMI/QRTR service 400 through `libssc`. Verified by tilting the device: KWin auto-rotates off the accelerometer |
-| Sensors (magnetometer, gyroscope) | ⚠️ readable, not exposed — the SSC serves both and `ssccli` prints plausible values (\|B\| ≈ 47 µT), but `iio-sensor-proxy` has no magnetometer or gyro driver, and this device has no *fused* compass sensor for its `ssc-compass` driver to bind to. Nothing in the desktop stack consumes either |
-| Audio | ❌ blocked — signed-firmware ceiling (ADSP `sar.cc:27` SSR loop tears down the card; card + amps wired on tertiary TDM) |
-| Modem / cellular | ⚠️ SIM + control plane work (IMEI/QMI up, 25 MCFG configs load), but RF won't go online (`DeviceNotReady`) → data blocked |
+| Boot, display, touch, GPU (a630) | ✅ |
+| Plasma Mobile + Desktop, one-tap mode toggle | ✅ |
+| WiFi (2.4/5 GHz) | ✅ |
+| Bluetooth, incl. BLE input devices | ✅ |
+| Speakers, headphones, built-in microphone | ✅ |
+| Sensors: accelerometer, light, proximity (auto-rotate) | ✅ |
+| Battery, charging, USB-C | ✅ |
+| Haptics, torch | ✅ |
+| Hardware video **decode** (H.264/VP8/VP9/HEVC) | ✅ |
+| Suspend / resume | ✅ works, but it's a shallow sleep — see below |
 
-### WiFi + Bluetooth bringup (WCN3990 combo chip, replicating pmOS)
+## What doesn't
 
-Wired in `work/wcn/` + `patch.sh`. Both sit on the shared WCN3990:
-- **`qrtr-ns` + `rmtfs`** (apt) — QMI name service + modem remote filesystem (`rmtfs` also starts the modem rproc).
-- **`tqftpserv`** ([linux-msm/tqftpserv](https://github.com/linux-msm/tqftpserv)) — TrustZone TFTP server; **without it the WLAN protection-domain never starts** (no WLFW QMI service).
-- **`pd-mapper`** ([linux-msm/pd-mapper](https://github.com/linux-msm/pd-mapper)) — registers the servreg PD domains (needs the firmware path pointed at the sunfish dir to find the `.jsn` files).
-- **`wcn-wifi.service`** — after WLFW appears, a single `modprobe ath10k_snoc` (it's blacklisted from autoload; probing before the WLAN PD is ready wedges it with `host capability request rejected: 90`).
-- **Bluetooth** — `patch.sh` injects a stable `local-bd-address` into the boot dtb's bluetooth node via `fdtput`, so `hci_qca` configures `hci0` at probe. `wcn-bt.service` is a runtime fallback that early-exits when the DT already brought `hci0` up.
-- `tqftpserv`/`pd-mapper` binaries are built on-device and gitignored (`work/wcn/bin/`).
+| | |
+|-|-|
+| **Mobile data / calls / SMS** | ❌ SIM is read and the control plane comes up, but the radio never goes online. Known to be a software problem — the same hardware registers fine under LineageOS. |
+| **Camera** | ❌ nothing at all; the camera subsystem driver doesn't attach. |
+| **GPS** | ❌ not started. |
+| Deep sleep / good battery life | ⚠️ suspend works but only saves ~20% versus idling awake, because the SoC never reaches its real low-power states. Under active investigation. |
+| Video **encode** | ❌ needs CVP support. |
+| Headphone jack detection | ❌ (headphones work, they're just not auto-detected.) |
+| Magnetometer, gyroscope | ⚠️ readable, but nothing in the desktop consumes them. |
 
 ---
 
-## Boot architecture
+## Installing it
 
-The Pixel 4a's stock unlocked bootloader (ABL) cannot boot a raw mainline kernel
-boot.img directly, so the chain mirrors the postmarketOS sdm845/sm7150 approach:
+### You need
+
+- A **Pixel 4a (sunfish)** with an **unlocked bootloader**
+  (`fastboot flashing unlock` — this wipes the device).
+- A Linux host with `fastboot`, `debos` (or Docker/podman to run it), `abootimg`,
+  and ~20 GB free.
+- A USB-C cable, ideally plugged into a **direct** port rather than a hub.
+- **Firmware from your own phone** — see the next section. We cannot ship it.
+
+### Step 1 — Get the vendor firmware off your own device
+
+Some hardware only works with Qualcomm/Google/Cirrus firmware that is proprietary and
+**not redistributable**, so this repo does not contain it. You have to supply it from
+your own phone (or from a factory image you downloaded from Google).
+
+Copy these out of the stock system, keeping the paths:
 
 ```
-ABL (stock, unlocked)
-  -> U-Boot "Tauchgang" (qcom mainline U-Boot, on the `boot` partition)
-     -> systemd-boot (EFI)
-        -> mainline kernel (vmlinuz.efi) + initrd + sm7150-google-sunfish.dtb
-           -> initramfs (local-top hook, see work/scripts/subpartitions)
-              -> switch_root -> Mobian (Debian 13) systemd
+/lib/firmware/qcom/sm7150/google/sunfish/
+    adsp.b*  adsp.mbn  adspr.jsn  adsps.jsn  adspua.jsn   # audio + sensor DSP
+    cdsp.b*  cdsp.mbn  cdspr.jsn                          # compute DSP
+    modem*   modemr.jsn  modemuw.jsn                      # modem
+    venus.mbn                                             # video decode
+    ipa_fws.b*                                            # network offload
+/lib/firmware/qca/
+    crbtfw01.tlv  crnv01.bin                              # Bluetooth
+/lib/firmware/
+    wlanmdsp.mbn                                          # WiFi
 ```
 
-### Nested GPT inside `userdata`
-The root filesystem is **not** a normal partition. A small GPT disk image
-(`FAT32 ESP` holding systemd-boot + kernel + initrd + dtb, plus an `ext4` root) is
-flashed **inside** the Android `userdata` partition. The nested image is created on
-4096-byte logical sectors (`deviceinfo_rootfs_image_sector_size=4096`).
+Optional — only for full speaker loudness (the speaker-protection DSP). Without it
+audio still works, just quieter:
 
-### Root discovery (the tricky part)
-The initramfs exposes the nested root via an **offset loop device**:
+```
+/lib/firmware/cirrus/
+    cs35l41-dsp1-spk-prot.wmfw           cs35l41-dsp1-spk-prot.bin
+    cs35l41-dsp1-spk-prot-google-sunfish.wmfw
+    cs35l41-dsp1-spk-prot-google-sunfish-spk.bin
+    cs35l41-dsp1-spk-prot-google-sunfish-ear.bin
+```
+
+WiFi also needs `ath10k` firmware for WCN3990 with `variant=google_sunfish`; that part
+comes from `linux-firmware`, which *is* redistributable.
+
+The "Binary build inputs" section of [`docs/internals.md`](docs/internals.md) lists the
+remaining non-source inputs `patch.sh` expects (`qbootctl` and its musl loader from a
+postmarketOS rootfs, the ath10k files, and an optional `ssh-authorized-keys` for
+headless bringup).
+
+### Step 2 — Build the image
+
+The rootfs is built with the **debos** recipe in `recipe/`, then `work/patch.sh`
+injects the mainline kernel, initramfs hooks and device fixes and repacks everything
+into a sparse `userdata-nested.simg`.
+
+The kernel comes from the [`sm7150-mainline`](https://github.com/sm7150-mainline/linux)
+fork plus this port's patches; `kernel-config-*.txt` is the exact config used.
+
+### Step 3 — Flash
+
+The stock bootloader **cannot** boot a mainline kernel directly, so the chain is
+`ABL → U-Boot → systemd-boot → kernel`. You need a U-Boot image built for sunfish on
+the `boot` partition, flashed to **both** slots. Flash it exactly as built — do not
+repackage it into a different Android boot-image header version.
 
 ```sh
-losetup -o 537919488 --show -f /dev/disk/by-partlabel/userdata
-# 537919488 = root partition start sector (131328) * 4096
+fastboot flash boot_a u-boot.img
+fastboot flash boot_b u-boot.img
+fastboot erase dtbo                        # skipping this hangs at the Google logo
+fastboot flash userdata userdata-nested.simg
+fastboot --set-active=a                    # reset the A/B retry counter
+fastboot reboot
 ```
 
-> ⚠️ `losetup --sector-size 4096 -P` **panics/stalls the kernel** on this device.
-> The plain offset loop (no `-P`, no `--sector-size`) is what works. The root is then
-> mounted by `root=UUID=<fs-uuid>` (a bare-fs loop has no PARTLABEL/PARTUUID).
+To get into the bootloader: hold **Power + Volume-Down**.
+
+### First boot
+
+Give it about **90 seconds** to reach a login. The device also brings up USB
+networking, so from the host:
+
+```sh
+ssh mobian@172.16.42.1      # password: 147147
+```
 
 ---
 
-## Key findings & fixes
+## If something goes wrong
 
-### 1. The ~13 s reboot was the **IPA driver**, not the watchdog
-The device rebooted ~13 s into Mobian, in a loop. After a long detour through the
-qcom watchdog, a **live USB-serial console** (`console=ttyGS0` → host `/dev/ttyACM0`)
-showed the last kernel message on **every** cycle was:
-
-```
-ipa 1e40000.ipa: IPA driver setup completed successfully
-<instant silent SoC reset — no panic, no watchdog msg, no "reboot:">
-```
-
-The reset is a **cold/PMIC-level reset** that clears DRAM (so `ramoops`/`pstore`
-comes up empty next boot — pstore capture is useless for this fault). IPA (IP
-Accelerator, network offload) is not needed to boot, so the fix is to disable it:
-
-```
-# kernel cmdline:           module_blacklist=ipa
-# /etc/modprobe.d/blacklist-ipa.conf:
-blacklist ipa
-install ipa /bin/true
-```
-
-`CONFIG_QCOM_IPA=m`, so no kernel rebuild is required.
-
-### 2. Watchdog: let the kernel core feed it
-The bootloader arms the qcom APSS watchdog. The kernel watchdog **core** auto-pings a
-HW-running watchdog **forever** (`CONFIG_WATCHDOG_OPEN_TIMEOUT=0`) — but **only until
-userspace opens `/dev/watchdog`**. systemd's `RuntimeWatchdogSec` opens it then fails
-to keep it alive. The robust answer is therefore to **never open it from userspace**:
-
-- initramfs: `modprobe qcom_wdt` (so the core adopts + auto-pings it) — do **not** kick it
-- Mobian: `RuntimeWatchdogSec=0` (don't let systemd take the device)
-- cmdline: `watchdog.open_timeout=0`
-
-(This held the device through initramfs and early Mobian; it was never the cause of the
-~13 s reboot — that was IPA.)
-
-### 3. Build & flash
-- The base rootfs is built with the **debos** recipe in `recipe/` (Mobian
-  mobian-recipes + an sm7150 / google-sunfish device target).
-- `work/patch.sh` injects the mainline kernel, the initramfs hooks
-  (`work/hooks/subpartitions`, `work/scripts/subpartitions`), the IPA blacklist, the
-  watchdog config, and the systemd-boot cmdline into the nested image, then repacks it
-  to a sparse `userdata-nested.simg`.
-- Flash:
-  ```sh
-  fastboot flash userdata userdata-nested.simg
-  fastboot --set-active=a     # reset A/B retry count
-  fastboot reboot
-  ```
-- To reach ABL fastboot for flashing: hold **Power + Volume-Down**. (Our debug USB
-  gadget enumerates as `18d1:d001` with **no** fastboot function, so `fastboot` cannot
-  talk to it while the device is cycling.)
+| Symptom | Cause |
+|-|-|
+| Boots straight into fastboot | The `boot` partition doesn't contain a valid U-Boot. Reflash it. |
+| Hangs on the Google logo | You skipped `fastboot erase dtbo`. |
+| Ping works but SSH is "connection refused" for minutes | Filesystem check after an unclean shutdown, or the first-boot race. Wait, then power-cycle once. **This is not a brick — don't reflash.** |
+| No WiFi or Bluetooth after reflashing | Vendor firmware was wiped. Redo Step 1. |
+| Bluetooth won't power on | Check for an rfkill soft block: `cat /sys/class/rfkill/*/soft`. |
+| Wrong or garish screen colours | Intermittent display-init glitch. Reboot. |
+| Very slow boot (many minutes) | Usually a debug kernel cmdline (verbose logging / serial console). |
 
 ---
 
-## Debug capture pipeline (no serial cable)
+## Contributing / help wanted
 
-The initramfs brings up a **USB gadget** (NCM net `172.16.42.1` + ACM serial) and the
-host runs:
+The most valuable things anyone could pick up right now:
 
-- `work/host-capture.sh` — keeps `enp0s20f0u1` at `172.16.42.2` and listens on
-  `:9999` for the initramfs diag push.
-- Live kernel console: add `console=ttyGS0,115200n8` to the cmdline (needs
-  `CONFIG_U_SERIAL_CONSOLE=y`) and `cat /dev/ttyACM0` on the host (stop ModemManager
-  first). This streams the kernel log **through the reboot** — it's what caught IPA.
+1. **Mobile data.** The biggest gap, and known to be software-only.
+2. **Deep sleep.** Suspend works, but the SoC never enters its low-power states. The
+   blocker is localised: the RPMh sleep set keeps the crystal oscillator voted on, and
+   the device resets during the device-suspend phase if QUP wrapper 0 is allowed to
+   fully idle. `docs/internals.md` has the details.
+3. **Camera**, **GPS**, video **encode**.
 
-These are debug aids; strip them (`console=ttyGS0`, verbose `loglevel`, the diag push)
-for a clean daily-driver image.
+If you have another SM7150 device, a few findings here are probably relevant to you
+too and are cheap to check — in particular, a single unbound driver can leave every
+voltage rail pinned at its maximum corner via `sync_state()`:
 
----
-
-## Layout
-
-```
-work/
-  patch.sh              # inject kernel + hooks + fixes into the nested image, repack
-  hooks/subpartitions   # initramfs build hook (bundles real util-linux losetup)
-  scripts/subpartitions # initramfs local-top: wdt, USB gadget, offset-loop root, diag
-  host-capture.sh       # host-side USB-net listener for the diag push
-  watchdog-kick*        # (legacy) OpenRC-style kicker, kept for reference
-recipe/                 # Mobian debos recipe + sm7150 device target (no binaries)
-kernel-config-*.txt     # the mainline kernel .config used for the build
+```sh
+dmesg | grep "sync_state() pending"
+cat /sys/devices/platform/soc@0/*/state_synced
 ```
 
-### Binary build inputs (not in repo — gitignored)
-`patch.sh` expects these next to it in `work/`; they are device/distro blobs, not source:
-- `qbootctl` + `ld-musl-aarch64.so.1` — the pmOS aarch64 (musl) `qbootctl` and its
-  loader, bundled into the rootfs for the A/B `mark-boot-successful` oneshot. musl's
-  loader path doesn't collide with Debian's glibc, so the binary runs unmodified.
-  (Pull both from a pmOS sm7150 rootfs: `usr/bin/qbootctl`, `lib/ld-musl-aarch64.so.1`.)
-- `ath10k-WCN3990-board-2.bin` + `ath10k-WCN3990-firmware-5.bin` — ath10k WCN3990
-  runtime firmware copied into the rootfs. `board-2.bin` must carry
-  `variant=google_sunfish`; `firmware-5.bin` is the 60-byte QCA-ATH10K API header.
-- `ssh-authorized-keys` (optional) — if present, `patch.sh` apt-installs
-  `openssh-server` (in the qemu-binfmt chroot), enables `ssh.service`, drops this
-  file into `/home/mobian/.ssh/authorized_keys`, and adds a `NOPASSWD:ALL` sudoers
-  rule for `mobian`. Enables key-only SSH over USB-net (172.16.42.1) for headless
-  bringup. Dev-device convenience — drop the sudoers line for anything shipped.
+Issues and patches welcome. Kernel patches destined for upstream should go to the
+usual mailing lists; device-tree and board changes are better routed through
+`sm7150-mainline`.
 
-## Credits / lineage
-- Kernel: [sm7150-mainline](https://github.com/sm7150-mainline/linux) fork.
-- Boot approach adapted from the postmarketOS sdm845/sm7150 work (U-Boot + systemd-boot,
-  nested rootfs in `userdata`).
-- Drivers (drv2624 haptics, stmfts touch, qcom_qg) reverse-engineered for this device.
+## Credits
+
+- Kernel: the [sm7150-mainline](https://github.com/sm7150-mainline/linux) fork.
+- Boot approach adapted from the postmarketOS sdm845/sm7150 work
+  (U-Boot + systemd-boot, nested rootfs inside `userdata`).
+- Userspace DSP/sensor plumbing builds on
+  [hexagonrpc](https://github.com/linux-msm/hexagonrpc) and
+  [libssc](https://codeberg.org/DylanVanAssche/libssc).
+- Device drivers (drv2624 haptics, stmfts touch, `qcom_qg` fuel gauge) reverse-engineered
+  for this device.
+
+Technical background and the debugging history live in
+[`docs/internals.md`](docs/internals.md).
