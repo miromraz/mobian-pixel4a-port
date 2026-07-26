@@ -17,3 +17,8 @@ recipe/output/
 ssh-authorized-keys
 # WCN3990 daemons built on-device (tqftpserv, pd-mapper)
 work/wcn/bin/
+# extracted vendor firmware: get it from sm7150-mainline/firmware-google-sunfish
+# (or your own device) - never commit it here. *.bin already covers the tuning
+# blobs; these two were the gaps that let firmware in.
+*.wmfw
+*.jsn
