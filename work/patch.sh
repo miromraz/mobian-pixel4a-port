@@ -272,6 +272,13 @@ ln -sf /etc/systemd/system/venus-rpmhpd-sync.service \
 if [ -d hexagonrpc ]; then
   install -Dm755 hexagonrpc/bin/hexagonrpcd rmnt/usr/bin/hexagonrpcd
   install -Dm644 hexagonrpc/lib/libhexagonrpc.so.0.4 rmnt/usr/lib/aarch64-linux-gnu/libhexagonrpc.so.0.4
+  # NOTE: sensors/config/s5_lsm6dsr.json deliberately DIFFERS from the stock capture.
+  # Its .orient block is x=+y y=-x z=+z, i.e. stock's -y/+x/+z plus 180 deg about Z.
+  # Without that half-turn iio-sensor-proxy reports "bottom-up" while the phone is
+  # upright, so KWin auto-rotates to Rotation 2 instead of 8 and the screen sits
+  # upside down. ACCEL_MOUNT_MATRIX in udev does NOT help: the ssc-accel backend
+  # ignores it and takes the matrix from the ADSP (which returns all zeros).
+  # Do not "restore" this file from a fresh vendor capture without re-applying it.
   mkdir -p rmnt/usr/share/qcom/sm7150/Google && cp -a hexagonrpc/share/sunfish rmnt/usr/share/qcom/sm7150/Google/
   install -Dm644 hexagonrpc/units/hexagonrpcd-adsp-rootpd.service rmnt/etc/systemd/system/hexagonrpcd-adsp-rootpd.service
   install -Dm644 hexagonrpc/units/hexagonrpcd-adsp-sensorspd.service rmnt/etc/systemd/system/hexagonrpcd-adsp-sensorspd.service
@@ -437,8 +444,42 @@ if [ -f "$EKS" ]; then
   sed -i 's@color: key.highlight ? Theme.selectionColor : Theme.fontColor@color: key.highlight ? "#3daee9" : "white"@' "$EKS"
 fi
 
-# never auto-suspend: Phosh idle-suspend tears down the USB gadget (looks like a shutdown)
-for t in sleep suspend hibernate hybrid-sleep; do ln -sf /dev/null "rmnt/etc/systemd/system/$t.target"; done
+# Suspend/resume works (see the qcom-wdt + fastrpc + BT-wake fixes above), so sleep is ENABLED.
+# It used to be masked because resume lost the USB gadget link: NM treats usb0 as an "external"
+# (assumed) device, and on resume it dropped usb0 to unmanaged->disconnected and then auto-
+# activated the generic DHCP profile 'Wired connection 1' instead of usb0's own static profile.
+# There is no DHCP server on that link, so the phone stayed unreachable until a reboot. The fix
+# is to let usb0's own profile autoconnect and outrank the generic one. NM stores the gadget
+# connection in its own state dir, so patch it there if present and fall back to a keyfile.
+# hibernate stays masked: there is no swap on this device.
+for t in hibernate hybrid-sleep; do ln -sf /dev/null "rmnt/etc/systemd/system/$t.target"; done
+# A real keyfile in /etc, not a conf.d default: NM's generated gadget profile sets
+# autoconnect=false EXPLICITLY, and connection defaults never override an explicit value.
+# Deliberately NO mac-address= -- NM's own generated profile pins the gadget MAC, which would
+# stop the profile matching if that MAC is ever regenerated, leaving the phone unreachable.
+# Match on interface-name only.
+install -Dm600 /dev/stdin rmnt/etc/NetworkManager/system-connections/usb0.nmconnection <<'EOF'
+[connection]
+id=usb0
+uuid=25007016-8683-4e15-a9b7-fa81ee015876
+type=ethernet
+autoconnect=true
+autoconnect-priority=100
+interface-name=usb0
+
+[ipv4]
+address1=172.16.42.1/24
+gateway=172.16.42.2
+method=manual
+
+[ipv6]
+addr-gen-mode=default
+method=link-local
+EOF
+# Do NOT add a system-sleep hook to "help" this along: systemd-sleep runs post hooks BEFORE
+# logind announces the wake, so NM still has usb0 strictly unmanaged at that point. A hook that
+# waits for the IP just blocks resume for its whole timeout and then fails; measured 78 s to
+# recover with a 30 s hook vs 48 s (a ~3 s recovery) with no hook at all, for a 45 s alarm.
 
 chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/sbin/update-initramfs -u -k "$KVER"
 
@@ -486,6 +527,14 @@ sed -i -E 's#  +# #g' emnt/loader/entries/mobian.conf
 sed -i -E 's#( watchdog\.open_timeout=0)+# watchdog.open_timeout=0#' emnt/loader/entries/mobian.conf
 grep -q 'watchdog.open_timeout=0' emnt/loader/entries/mobian.conf || sed -i 's# rootwait# rootwait watchdog.open_timeout=0#' emnt/loader/entries/mobian.conf
 sed -i 's# watchdog\.open_timeout=0# watchdog.open_timeout=0 quiet#' emnt/loader/entries/mobian.conf
+# fw_devlink defaults to sync_state=strict, which merely PRINTS "sync_state() pending due to X"
+# and waits forever for X to bind. Three consumers on this device never bind (venus is
+# blacklisted, ipa is late-loaded, and 506a000.gmu has no driver at all because mainline's
+# adreno grabs the GMU node with of_find_device_by_node instead of binding it). The result was
+# that gcc + gpucc NEVER ran clk_sync_state, so their unused clocks were never gated, and the
+# NoC/rpmhpd clamps only lifted if something happened to bind later. `timeout` forces sync_state
+# once the deferred-probe timeout expires (CONFIG_DRIVER_DEFERRED_PROBE_TIMEOUT=10 is set).
+grep -q 'fw_devlink.sync_state=' emnt/loader/entries/mobian.conf || sed -i 's#^options #options fw_devlink.sync_state=timeout #' emnt/loader/entries/mobian.conf
 # root is mounted via an OFFSET loop on userdata -> resolve by fs UUID (PARTLABEL/PARTUUID don't apply to a bare-fs loop)
 sed -i "s#root=PARTLABEL=mobian_root#root=UUID=$RUUID#" emnt/loader/entries/mobian.conf
 sed -i "s#root=UUID=[^ ]* rw#root=UUID=$RUUID rw#" emnt/loader/entries/mobian.conf
