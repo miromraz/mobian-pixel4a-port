@@ -37,10 +37,18 @@ else:
 
 # grey-world white balance, then a plain sRGB-ish gamma
 rgb = np.dstack([r, g, b])
-means = rgb.reshape(-1, 3).mean(axis=0)
+# Clipped highlights -- a window, a lamp -- have no colour left in them, so
+# leaving them in the grey-world average drags the whole frame off-colour.
+lit = rgb.reshape(-1, 3)
+lit = lit[lit.max(axis=1) < 0.95] if (lit.max(axis=1) < 0.95).any() else lit
+means = lit.mean(axis=0)
 rgb *= means.mean() / np.maximum(means, 1e-6)
-hi = np.percentile(rgb, 99.5)
+# Blown-out pixels keep only their surviving channel and read as a colour cast
+# (a window comes out pink), so paint them white instead of balancing them.
+clipped = rgb.max(axis=2) >= 0.98
+hi = np.percentile(rgb, 97)
 rgb = np.clip(rgb / max(hi, 1e-6), 0, 1) ** (1 / 2.2)
+rgb[clipped] = 1.0
 
 Image.fromarray((rgb * 255).astype(np.uint8)).save(dst)
 print(f"{dst}: {rgb.shape[1]}x{rgb.shape[0]}, mean level {bayer.mean():.4f}")

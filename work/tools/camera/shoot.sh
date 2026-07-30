@@ -21,12 +21,15 @@ dgain=1024
 exp=1200
 for try in 1 2 3 4 5 6; do
 	v4l2-ctl -d $S -c exposure=$exp -c analogue_gain=$gain -c digital_gain=$dgain
-	sudo /home/mobian/capture.sh "$CAM" "$MODE" 6 "$OUT" >/dev/null 2>&1 || exit 1
-	# Light meter: mean of the high bytes of the last frame. Every fifth byte
+	sudo /home/mobian/capture.sh "$CAM" "$MODE" 3 "$OUT" >/dev/null 2>&1 || exit 1
+	# Light meter: mean of the high bytes from the middle of the last frame --
+	# metering the first rows means metering whatever is at the top of the
+	# picture, which for a room with a window underexposes everything else by
+	# several stops. Every fifth byte
 	# carries the packed low bits of four pixels and is nearly random even on a
 	# black frame, so it has to be dropped or the meter reads ~35 on anything.
-	mean=$(sudo tail -c $FRAME "$OUT" | od -An -tu1 -v -N 400000 | tr -s ' ' '\n' | grep -v '^$' | awk 'NR % 5 != 0 {if ($1 > 250) c++} END {print c + 0}')
-	lvl=$(sudo tail -c $FRAME "$OUT" | od -An -tu1 -v -N 200000 | tr -s ' ' '\n' | grep -v '^$' | awk 'NR % 5 != 0 {s += $1; n++} END {printf "%d", s / n}')
+	mean=$(sudo tail -c $((FRAME / 2)) "$OUT" | od -An -tu1 -v -N 400000 | tr -s ' ' '\n' | grep -v '^$' | awk 'NR % 5 != 0 {if ($1 > 250) c++} END {print c + 0}')
+	lvl=$(sudo tail -c $((FRAME / 2)) "$OUT" | od -An -tu1 -v -N 200000 | tr -s ' ' '\n' | grep -v '^$' | awk 'NR % 5 != 0 {s += $1; n++} END {printf "%d", s / n}')
 	echo "try=$try exp=$exp gain=$gain level=$lvl saturated=$mean"
 	if [ "$lvl" -gt 110 ]; then
 		gain=$((gain / 3)); exp=$((exp / 2))

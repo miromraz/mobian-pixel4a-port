@@ -25,5 +25,8 @@ done
 
 v4l2-ctl -d /dev/video0 --set-fmt-video=width=$W,height=$H,pixelformat=pRAA
 rm -f "$OUT"
-timeout 30 v4l2-ctl -d /dev/video0 --stream-mmap --stream-count="$FRAMES" --stream-to="$OUT"
+# Scale the guard with the frame count: killing v4l2-ctl mid-stream leaves the
+# subdevs marked streaming (WARN in call_s_stream) and every later capture then
+# fails with an empty file until the modules are reloaded.
+timeout $((15 + FRAMES * 8)) v4l2-ctl -d /dev/video0 --stream-mmap --stream-count="$FRAMES" --stream-to="$OUT"
 ls -l "$OUT"
