@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Turn one MIPI RAW10-packed SRGGB frame from camss RDI into a PNG.
+"""Turn one MIPI RAW10-packed bayer frame from camss RDI into a PNG.
 
-usage: raw2png.py in.raw out.png [width] [height] [stride] [rggb|bggr]
+usage: raw2png.py in.raw out.png [width] [height] [stride] [rggb|bggr] [rot]
+
+Both of sunfish's sensors are mounted a quarter turn round, so `rot` defaults to
+90 degrees clockwise. Pass 0 to get the sensor's own readout, or 270 for a frame
+shot with both flips on (that is another 180 on top).
 """
 import sys
 import numpy as np
@@ -50,5 +54,9 @@ hi = np.percentile(rgb, 97)
 rgb = np.clip(rgb / max(hi, 1e-6), 0, 1) ** (1 / 2.2)
 rgb[clipped] = 1.0
 
-Image.fromarray((rgb * 255).astype(np.uint8)).save(dst)
-print(f"{dst}: {rgb.shape[1]}x{rgb.shape[0]}, mean level {bayer.mean():.4f}")
+img = Image.fromarray((rgb * 255).astype(np.uint8))
+rot = int(sys.argv[7]) if len(sys.argv) > 7 else 90
+if rot:
+    img = img.rotate(-rot, expand=True)
+img.save(dst)
+print(f"{dst}: {img.width}x{img.height}, rot {rot}, mean level {bayer.mean():.4f}")

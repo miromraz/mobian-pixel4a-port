@@ -19,9 +19,17 @@ Develop a frame on the host:
     ./raw2png.py frame.raw out.png 1640 1232 2064            # front
     ./raw2png.py frame.raw out.png 4032 3024 5040            # rear
 
-Pass `bggr` as a sixth argument for a frame shot with both flips on -- that is a
-180 degree rotation, and it swaps the bayer order. The imx363's own default used
-to be flips-on, which is why frames were upside down until the driver was fixed.
+**Both sensors are mounted a quarter turn round**, so a frame straight off the
+RDI is 90 degrees out and `raw2png.py` turns it clockwise by default. Pass `0` as
+a seventh argument to see the sensor's own readout. The DT tells applications
+about this with `rotation = <270>` on both nodes -- get that number wrong and
+libcamera's correction is wrong with it (90 instead of 270 put every preview
+upside down).
+
+Pass `bggr` as the sixth argument for a frame shot with both flips on -- that is
+another 180 degrees, and it swaps the bayer order, so such a frame wants
+`bggr 270`. The imx363's own default used to be flips-on until the driver was
+fixed.
 
 The frame is bayer with no ISP: `raw2png.py` removes the 64 LSB black pedestal,
 does a 2x2 bin, grey-world white balance and a gamma curve. Good enough to see
