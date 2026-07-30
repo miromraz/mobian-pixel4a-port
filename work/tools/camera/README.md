@@ -10,15 +10,18 @@ which develops a captured frame on the host.
     ./shoot.sh   [front|rear] OUT [MODE]      # same, with a crude auto-exposure loop
 
 `capture.sh` wires the sensor -> CSIPHY -> CSID0 -> VFE0 RDI0 -> /dev/video0 and
-writes MIPI RAW10-packed frames. Front defaults to 1640x1232 (also verified at
-the full 3280x2464) and is RGGB (`pRAA`); rear is 4032x3024 and comes out BGGR
-(`pBAA`) because both flip controls default to on. No root needed -- `mobian` is
-in the `video` group.
+writes MIPI RAW10-packed SRGGB frames (`pRAA`). Front defaults to 1640x1232
+(also verified at the full 3280x2464), rear to 4032x3024. No root needed --
+`mobian` is in the `video` group.
 
 Develop a frame on the host:
 
     ./raw2png.py frame.raw out.png 1640 1232 2064            # front
-    ./raw2png.py frame.raw out.png 4032 3024 5040 bggr       # rear
+    ./raw2png.py frame.raw out.png 4032 3024 5040            # rear
+
+Pass `bggr` as a sixth argument for a frame shot with both flips on -- that is a
+180 degree rotation, and it swaps the bayer order. The imx363's own default used
+to be flips-on, which is why frames were upside down until the driver was fixed.
 
 The frame is bayer with no ISP: `raw2png.py` removes the 64 LSB black pedestal,
 does a 2x2 bin, grey-world white balance and a gamma curve. Good enough to see
@@ -65,4 +68,4 @@ The rear camera then needed none of this fighting: with the same CSIPHY fix in
 place its 636 MHz link -- 1272 Mbps per lane, nearly double the front's -- worked
 on the first try. Its driver is out-of-tree (`sdm670-mainline`, Pixel 3a) and
 there is no autofocus: the VCM has no mainline driver, so focus sits wherever the
-lens rests.
+lens rests. Its one real bug was the flip defaults above.
