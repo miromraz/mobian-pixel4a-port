@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Turn one MIPI RAW10-packed SRGGB frame from camss RDI into a PNG.
+
+usage: raw2png.py in.raw out.png [width] [height] [stride]
+"""
+import sys
+import numpy as np
+from PIL import Image
+
+src, dst = sys.argv[1], sys.argv[2]
+w = int(sys.argv[3]) if len(sys.argv) > 3 else 1640
+h = int(sys.argv[4]) if len(sys.argv) > 4 else 1232
+stride = int(sys.argv[5]) if len(sys.argv) > 5 else 2064
+
+raw = np.fromfile(src, dtype=np.uint8)
+raw = raw[:h * stride].reshape(h, stride)
+
+# 5 bytes carry 4 pixels: 4 high bytes then one byte of packed low 2 bits.
+groups = w // 4
+p = raw[:, :groups * 5].reshape(h, groups, 5).astype(np.uint16)
+lo = p[:, :, 4]
+px = np.empty((h, groups, 4), dtype=np.uint16)
+for i in range(4):
+    px[:, :, i] = (p[:, :, i] << 2) | ((lo >> (2 * i)) & 0x3)
+bayer = px.reshape(h, w).astype(np.float32) / 1023.0
+
+# Bilinear-free debayer: average each 2x2 RGGB cell into one RGB pixel.
+r = bayer[0::2, 0::2]
+g = (bayer[0::2, 1::2] + bayer[1::2, 0::2]) / 2
+b = bayer[1::2, 1::2]
+
+# grey-world white balance, then a plain sRGB-ish gamma
+rgb = np.dstack([r, g, b])
+means = rgb.reshape(-1, 3).mean(axis=0)
+rgb *= means.mean() / np.maximum(means, 1e-6)
+hi = np.percentile(rgb, 99.5)
+rgb = np.clip(rgb / max(hi, 1e-6), 0, 1) ** (1 / 2.2)
+
+Image.fromarray((rgb * 255).astype(np.uint8)).save(dst)
+print(f"{dst}: {rgb.shape[1]}x{rgb.shape[0]}, mean level {bayer.mean():.4f}")

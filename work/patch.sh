@@ -384,6 +384,19 @@ if [ -d kernel ]; then
   # the RPMh XO vote up: bi_tcxo prepare count 93 -> 15 with this in place.
   install -Dm644 kernel/i2c-qcom-cci.ko \
     "rmnt/lib/modules/$KVER/kernel/drivers/i2c/busses/i2c-qcom-cci.ko"
+  # Front camera (8 MP IMX355 on CSIPHY2), all three autoloaded from the DT.
+  # slg51000: the camera PMIC every camera rail hangs off. It needs the buck GPIO
+  # listed second in dlg,cs-gpios raised 5 ms before the chip select, or it never
+  # ACKs on i2c; it also had no OF match table, so udev could not autoload it.
+  # qcom-camss: SM7150 CSIPHY clocking. cphy_rx (parent of the csiphyN branches)
+  # must run at 384 MHz, not 300 -- at 300 the PHY sees the lanes but the CSID
+  # never gets a valid packet -- and CSIPHY0's clock must be on for every PHY.
+  install -Dm644 kernel/slg51000-regulator.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/regulator/slg51000-regulator.ko"
+  install -Dm644 kernel/imx355.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/media/i2c/imx355.ko"
+  install -Dm644 kernel/qcom-camss.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/media/platform/qcom/camss/qcom-camss.ko"
   depmod -b rmnt "$KVER"
   install -Dm644 kernel/asound.state rmnt/var/lib/alsa/asound.state
   # UCM2 profile: PipeWire/WirePlumber pick up the card as a desktop sink
