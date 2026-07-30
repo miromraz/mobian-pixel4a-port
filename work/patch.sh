@@ -384,7 +384,8 @@ if [ -d kernel ]; then
   # the RPMh XO vote up: bi_tcxo prepare count 93 -> 15 with this in place.
   install -Dm644 kernel/i2c-qcom-cci.ko \
     "rmnt/lib/modules/$KVER/kernel/drivers/i2c/busses/i2c-qcom-cci.ko"
-  # Front camera (8 MP IMX355 on CSIPHY2), all three autoloaded from the DT.
+  # Both cameras: 8 MP IMX355 on CSIPHY2 (front) and 12 MP IMX363 on CSIPHY0
+  # (rear), all autoloaded from the DT.
   # slg51000: the camera PMIC every camera rail hangs off. It needs the buck GPIO
   # listed second in dlg,cs-gpios raised 5 ms before the chip select, or it never
   # ACKs on i2c; it also had no OF match table, so udev could not autoload it.
@@ -395,6 +396,12 @@ if [ -d kernel ]; then
     "rmnt/lib/modules/$KVER/kernel/drivers/regulator/slg51000-regulator.ko"
   install -Dm644 kernel/imx355.ko \
     "rmnt/lib/modules/$KVER/kernel/drivers/media/i2c/imx355.ko"
+  # imx363 is the out-of-tree rear-camera driver; it needs the v4l2-cci regmap
+  # helper, which nothing else in this config pulls in.
+  install -Dm644 kernel/imx363.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/media/i2c/imx363.ko"
+  install -Dm644 kernel/v4l2-cci.ko \
+    "rmnt/lib/modules/$KVER/kernel/drivers/media/v4l2-core/v4l2-cci.ko"
   install -Dm644 kernel/qcom-camss.ko \
     "rmnt/lib/modules/$KVER/kernel/drivers/media/platform/qcom/camss/qcom-camss.ko"
   depmod -b rmnt "$KVER"

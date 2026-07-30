@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn one MIPI RAW10-packed SRGGB frame from camss RDI into a PNG.
 
-usage: raw2png.py in.raw out.png [width] [height] [stride]
+usage: raw2png.py in.raw out.png [width] [height] [stride] [rggb|bggr]
 """
 import sys
 import numpy as np
@@ -22,12 +22,18 @@ lo = p[:, :, 4]
 px = np.empty((h, groups, 4), dtype=np.uint16)
 for i in range(4):
     px[:, :, i] = (p[:, :, i] << 2) | ((lo >> (2 * i)) & 0x3)
-bayer = px.reshape(h, w).astype(np.float32) / 1023.0
+bayer = px.reshape(h, w).astype(np.float32)
+# Sony sensors output a 64 LSB black pedestal; without removing it everything
+# above the shadows gets washed out.
+bayer = np.clip(bayer - 64.0, 0, None) / (1023.0 - 64.0)
 
-# Bilinear-free debayer: average each 2x2 RGGB cell into one RGB pixel.
-r = bayer[0::2, 0::2]
+# Bilinear-free debayer: average each 2x2 cell into one RGB pixel.
+order = sys.argv[6] if len(sys.argv) > 6 else "rggb"
 g = (bayer[0::2, 1::2] + bayer[1::2, 0::2]) / 2
-b = bayer[1::2, 1::2]
+if order == "bggr":
+    r, b = bayer[1::2, 1::2], bayer[0::2, 0::2]
+else:
+    r, b = bayer[0::2, 0::2], bayer[1::2, 1::2]
 
 # grey-world white balance, then a plain sRGB-ish gamma
 rgb = np.dstack([r, g, b])

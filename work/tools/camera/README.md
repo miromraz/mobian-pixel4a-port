@@ -1,24 +1,28 @@
-# Front camera bring-up tools (Pixel 4a / sunfish)
+# Camera bring-up tools (Pixel 4a / sunfish)
 
-The 8 MP IMX355 front camera works on mainline. Everything below runs on the phone
-except `raw2png.py`, which develops a captured frame on the host.
+Both cameras work on mainline: the 8 MP IMX355 front (CSIPHY2) and the 12 MP
+IMX363 rear (CSIPHY0). Everything below runs on the phone except `raw2png.py`,
+which develops a captured frame on the host.
 
 ## Capture
 
-    ./capture.sh [WIDTHxHEIGHT] [FRAMES] [OUT]     # default 1640x1232, 5 frames
-    ./shoot.sh   OUT [MODE]                        # same, with a crude auto-exposure loop
+    ./capture.sh [front|rear] [WIDTHxHEIGHT] [FRAMES] [OUT]
+    ./shoot.sh   [front|rear] OUT [MODE]      # same, with a crude auto-exposure loop
 
-`capture.sh` wires imx355 -> CSIPHY2 -> CSID0 -> VFE0 RDI0 -> /dev/video0 and writes
-MIPI RAW10-packed SRGGB frames (`pRAA`). Verified at 1640x1232 and full 3280x2464.
-No root needed -- `mobian` is in the `video` group.
+`capture.sh` wires the sensor -> CSIPHY -> CSID0 -> VFE0 RDI0 -> /dev/video0 and
+writes MIPI RAW10-packed frames. Front defaults to 1640x1232 (also verified at
+the full 3280x2464) and is RGGB (`pRAA`); rear is 4032x3024 and comes out BGGR
+(`pBAA`) because both flip controls default to on. No root needed -- `mobian` is
+in the `video` group.
 
 Develop a frame on the host:
 
-    ./raw2png.py frame.raw out.png 1640 1232 2064      # stride 4112 for 3280x2464
+    ./raw2png.py frame.raw out.png 1640 1232 2064            # front
+    ./raw2png.py frame.raw out.png 4032 3024 5040 bggr       # rear
 
-The frame is bayer with no ISP: `raw2png.py` does a 2x2 bin, grey-world white
-balance and a gamma curve. Good enough to see whether the camera works, not a
-photo pipeline.
+The frame is bayer with no ISP: `raw2png.py` removes the 64 LSB black pedestal,
+does a 2x2 bin, grey-world white balance and a gamma curve. Good enough to see
+whether the camera works, not a photo pipeline.
 
 ## Diagnostics
 
@@ -34,6 +38,15 @@ sensor-is-really-streaming check:
 
     sudo ./i2cread.py 13 0x1a 0x0005 1 6 0.3    # imx355 frame counter must advance
 
+Is the rear camera dark or broken? Point the torch at whatever it faces:
+
+    echo 100 | sudo tee /sys/class/leds/white:flash/brightness
+
+A frame that goes from the bare pedestal to a visible level means the whole path
+is fine and the lens is just looking at something dark. Note that the imx363's
+own `test_pattern` control is not usable -- selecting a pattern makes the sensor
+stop emitting pixel data altogether, so the frames arrive as zeroes.
+
 ## What was wrong (for the next person)
 
 1. SLG51000 never ACKed: `dlg,cs-gpios` has two entries and the *second* one is the
@@ -48,4 +61,8 @@ sensor-is-really-streaming check:
    packet. The vendor runs cphy_rx at 384/400 MHz and also enables CSIPHY0's
    clock for every PHY.
 
-The rear IMX363 has no mainline driver, so only the front camera works.
+The rear camera then needed none of this fighting: with the same CSIPHY fix in
+place its 636 MHz link -- 1272 Mbps per lane, nearly double the front's -- worked
+on the first try. Its driver is out-of-tree (`sdm670-mainline`, Pixel 3a) and
+there is no autofocus: the VCM has no mainline driver, so focus sits wherever the
+lens rests.
