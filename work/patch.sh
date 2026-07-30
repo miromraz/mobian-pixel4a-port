@@ -291,15 +291,17 @@ WantedBy=multi-user.target
 EOF
 ln -sf /etc/systemd/system/nfc-poll.service \
   rmnt/etc/systemd/system/multi-user.target.wants/nfc-poll.service
-# --- Idle power: bind venus so rpmhpd/interconnect sync_state() can fire.
-# venus is blacklisted for autoload, so nothing ever binds aa00000.video-codec, and it is the
-# last unbound consumer of rpmhpd + the config/mmss/gem NoCs. While a provider has an unbound
+# --- Idle power: backstop that binds venus so rpmhpd/interconnect sync_state() can fire.
+# venus_core + venus_dec autoload from the DT now (only venus_enc stays blacklisted, see
+# venus-blacklist.conf), so this is normally a no-op. It stays as a backstop because if nothing
+# binds aa00000.video-codec it is the last unbound consumer of rpmhpd + the config/mmss/gem
+# NoCs, and that regresses idle power silently. While a provider has an unbound
 # consumer, sync_state() never runs: rpmhpd_aggregate_corner() then pins EVERY rail to its
 # maximum corner in the RPMh SLEEP set as well as the active set, and the NoCs keep the
 # boot-time INT_MAX bandwidth clamp. Measured effect of loading it: state_synced 0 -> 1, every
 # INT_MAX gone, cx/mx down to corner 64, and DDR DVFS starts actually switching frequency
-# (was count:1 on two frequencies for a whole boot). Loaded late so a video firmware fault
-# leaves the phone up and reachable instead of wedging the boot.
+# (was count:1 on two frequencies for a whole boot). Still ordered after sshd so that on a kernel
+# where autoload is broken the modprobe here cannot wedge the boot before the phone is reachable.
 {
   printf '[Unit]\n'
   printf 'Description=Bind venus so rpmhpd/interconnect sync_state() can fire\n'
