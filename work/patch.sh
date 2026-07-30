@@ -153,6 +153,13 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
   printf "Package: *\nPin: release n=forky\nPin-Priority: 100\n" > /etc/apt/preferences.d/99-forky-low
   apt-get update
   apt-get install -y -t forky iio-sensor-proxy libssc-bin
+  # NFC: neard is the only NFC daemon in Debian and it needs libnl >= 3.11, which trixie
+  # does not have (3.7.0-2). libnl-route-3-200 MUST be listed explicitly: pulling only
+  # neard makes apt satisfy the libnl-3/libnl-genl bump while leaving libnl-route behind,
+  # and its solution to that is to REMOVE wpasupplicant -- i.e. it silently trades WiFi
+  # for NFC. Naming all three keeps it to an in-place upgrade of one soname family
+  # (libnl-3.so.200 and friends are unchanged) with nothing removed.
+  apt-get install -y -t forky neard libnl-3-200 libnl-genl-3-200 libnl-route-3-200
   # Plasma DE (installed by the debos recipe built with `-e plasma`): make SDDM the
   # display manager in place of Phosh, and add the two recommends-free omissions:
   #   - pkexec: separate package in Debian 13, needed by the Switch Mode launcher
@@ -244,6 +251,46 @@ if [ -d ipa ]; then
   ln -sf /etc/systemd/system/ipa-late-load.service \
     rmnt/etc/systemd/system/multi-user.target.wants/ipa-late-load.service
 fi
+# --- NFC: keep the adapter polling. The ST54J binds via nxp-nci_i2c (kernel commits
+# d47a99447bad + 6546445451c6; the DT enable-gpios rename is ff0004e857d9), and neard
+# comes from apt above, but neard itself never polls on its own: StartPollLoop has to be
+# called by a D-Bus client, and neard drops the loop again after each target it activates.
+# Plasma Mobile ships no NFC client at all, so without this unit the hardware is bound,
+# powered and completely inert -- tapping a tag does nothing.
+#
+# This does cost battery: an armed poll loop pulses the RF field continuously. It is not
+# gated on screen state, because the only cheap signal available (backlight brightness)
+# was not verified to track blanking on this panel, and a wrong guess there would mean
+# NFC silently never polls. `systemctl disable --now nfc-poll` if the drain matters more.
+install -Dm755 /dev/stdin rmnt/usr/local/bin/nfc-poll <<'EOF'
+#!/bin/sh
+A=/org/neard/nfc0
+while :; do
+  if [ "$(busctl --system get-property org.neard $A org.neard.Adapter Polling 2>/dev/null)" \
+       != "b true" ]; then
+    busctl --system set-property org.neard $A org.neard.Adapter Powered b true 2>/dev/null
+    busctl --system call org.neard $A org.neard.Adapter StartPollLoop s Initiator \
+      >/dev/null 2>&1
+  fi
+  sleep 2
+done
+EOF
+install -Dm644 /dev/stdin rmnt/etc/systemd/system/nfc-poll.service <<'EOF'
+[Unit]
+Description=Keep the NFC adapter polling for tags
+Requires=neard.service
+After=neard.service
+
+[Service]
+ExecStart=/usr/local/bin/nfc-poll
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sf /etc/systemd/system/nfc-poll.service \
+  rmnt/etc/systemd/system/multi-user.target.wants/nfc-poll.service
 # --- Idle power: bind venus so rpmhpd/interconnect sync_state() can fire.
 # venus is blacklisted for autoload, so nothing ever binds aa00000.video-codec, and it is the
 # last unbound consumer of rpmhpd + the config/mmss/gem NoCs. While a provider has an unbound
