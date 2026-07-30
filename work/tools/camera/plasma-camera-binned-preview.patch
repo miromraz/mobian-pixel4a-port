@@ -1,0 +1,116 @@
+--- a/src/plasmacamera/worker.h
++++ b/src/plasmacamera/worker.h
+@@ -101,6 +101,9 @@
+     void startViewFinder();
+     void stopViewFinder();
+ 
++    // Restart the view finder with either the preview or the full resolution config
++    void reconfigure(bool forStillCapture);
++
+     void setState(State state);
+     void setMode(CaptureMode mode);
+ 
+@@ -144,6 +147,10 @@
+     QMutex m_stillCaptureFramesMutex;
+     QQueue<QImage> m_stillCaptureFrames;
+ 
++    // Whether the camera is configured for a still capture rather than the preview
++    bool m_stillConfig = false;
++    int m_stillSkipFrames = 0;
++
+     libcamera::Stream *m_stream{};
+     libcamera::FrameBufferAllocator *m_allocator{};
+     std::map<libcamera::FrameBuffer *, std::unique_ptr<Image>> m_mappedBuffers;
+--- a/src/plasmacamera/worker.cpp
++++ b/src/plasmacamera/worker.cpp
+@@ -88,6 +88,10 @@
+ {
+     m_stillCaptureFrames.clear();
+     setMode(CaptureMode::StillImage);
++
++    // Reconfigure to the sensor maximum, and drop the frames the AGC needs to settle
++    m_stillSkipFrames = 6;
++    reconfigure(true);
+ }
+ 
+ void Worker::setSettings(const Settings& settings)
+@@ -203,6 +207,12 @@
+             return;
+         }
+ 
++        // The still config was just applied, so let the exposure settle first
++        if (m_stillSkipFrames > 0) {
++            --m_stillSkipFrames;
++            return;
++        }
++
+         // Add image to frames used for shot
+         m_stillCaptureFrames.enqueue(m_image.copy());
+ 
+@@ -210,6 +220,10 @@
+         if (m_stillCaptureFrames.length() == 5) {
+             setMode(CaptureMode::ViewFinder);
+             Q_EMIT stillCaptureFrames(m_stillCaptureFrames);
++
++            // Back to the cheap preview config; this invalidates m_image
++            reconfigure(false);
++            return;
+         }
+     }
+ 
+@@ -295,6 +309,28 @@
+     m_framePollTimer->start();
+ }
+ 
++void Worker::reconfigure(const bool forStillCapture)
++{
++    if (!m_camera || m_stillConfig == forStillCapture) {
++        return;
++    }
++
++    // stopViewFinder() releases the camera and drops our reference, so keep one
++    const std::shared_ptr<libcamera::Camera> camera = m_camera;
++
++    stopViewFinder();
++
++    m_stillConfig = forStillCapture;
++    m_camera = camera;
++
++    if (const int ret = m_camera->acquire(); ret < 0) {
++        setError(ret);
++        return;
++    }
++
++    startViewFinder();
++}
++
+ void Worker::stopViewFinder()
+ {
+     qDebug() << "stop view finder";
+@@ -348,6 +384,7 @@
+     }
+ 
+     m_camera.reset();
++    m_stillConfig = false;
+ }
+ 
+ void Worker::setState(const State state)
+@@ -469,6 +506,18 @@
+     // TODO: allow user to override config
+     //  - https://git.libcamera.org/libcamera/libcamera.git/tree/src/apps/qcam/main_window.cpp#n399
+ 
++    /*
++     * The Viewfinder role hands us the sensor's largest mode. On platforms without a
++     * hardware ISP libcamera debayers on the CPU, so previewing at full sensor
++     * resolution burns several cores and heats the SoC for pixels no display can show.
++     * Ask for a display-sized preview instead, which also lets libcamera pick a smaller
++     * (binned) sensor mode. Stills are unaffected: capture() reconfigures to the sensor
++     * maximum for the duration of the shot.
++     */
++    if (!m_stillConfig) {
++        streamConfig.size = libcamera::Size(1440, 1080);
++    }
++
+     qDebug() << "Viewfinder configuration is: " << streamConfig.toString();
+ 
+     // Validate config
