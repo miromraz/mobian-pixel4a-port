@@ -2,22 +2,20 @@
 set -e
 cd /home/realni/pixel-a4-linux/mobian/work
 KVER=7.1.0-sm7150+
+# Kernel build tree that KVER names. Modules are installed wholesale from here (see the
+# modules_install below), so this is the single source of truth for anything in /lib/modules.
+KSRC=${KSRC:-/home/realni/pixel-a4-linux/kernel/linux-fork}
+KMAKE="ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}"
 
-# The .ko files under kernel/ are overlaid into rmnt/lib/modules/$KVER and are only loadable
-# if they were built from the kernel that $KVER names. Refresh them from the v7.2 build
-# (branch sunfish-venus-v7.2) whenever KVER moves -- an rc3-built .ko dropped into a v7.2
-# tree loads as "invalid module format" and the subsystem silently never comes up, which is
-# exactly how the device ended up on a bare rc3 image with no audio/camera/NFC (2026-07-31).
-# Fail the build loudly rather than ship that.
-for _ko in kernel/*.ko; do
-  [ -e "$_ko" ] || continue
-  _vm=$(modinfo -F vermagic "$_ko" 2>/dev/null | awk '{print $1}')
-  if [ -n "$_vm" ] && [ "$_vm" != "$KVER" ]; then
-    echo "FATAL: $_ko has vermagic '$_vm' but KVER=$KVER -- rebuild kernel/*.ko for $KVER" >&2
-    exit 1
-  fi
-done
-unset _ko _vm
+# Assert the tree really builds KVER. A module built from a different kernel loads as
+# "invalid module format" and the subsystem then silently never comes up -- which is exactly
+# how the device ended up on a bare rc3 image with no audio/camera/NFC (2026-07-31).
+KREL=$(make -s -C "$KSRC" $KMAKE kernelrelease 2>/dev/null | tail -1)
+if [ "$KREL" != "$KVER" ]; then
+  echo "FATAL: KSRC=$KSRC builds '$KREL' but KVER=$KVER" >&2
+  echo "       point KSRC at the matching tree (branch sunfish-venus-v7.2) or fix KVER" >&2
+  exit 1
+fi
 
 simg2img userdata-nested.simg nested.img
 LOOP=$(losetup --sector-size 4096 -P --show -f nested.img)
@@ -379,77 +377,32 @@ After=hexagonrpcd-adsp-sensorspd.service
 [Service]
 ExecStartPre=/bin/sh -c 'n=0; until [ "$(gdbus call --system -d net.hadess.SensorProxy -o /net/hadess/SensorProxy -m org.freedesktop.DBus.Properties.Get net.hadess.SensorProxy HasAccelerometer 2>/dev/null)" = "(<true>,)" ]; do n=$((n+1)); [ $n -ge 75 ] && break; sleep 1; done'
 UNIT
-# --- sunfish audio (kernel branch sunfish-audio-tdm): SEC_TDM speaker machine-driver
-# module + saved mixer state (SEC_TDM_RX_0 routing + moderate amp volumes), plus the
-# built-in-mic stack: RT5514P codec on tertiary TDM (snd-soc-rt5514 + rl6231 PLL lib)
-# and the q6afe TDM-control-field plumbing the capture port needs.
+# --- kernel modules: install the WHOLE tree straight from the kernel build.
+# This used to overlay ~16 individual .ko into the base image's module dir. That was a
+# permanent vermagic hazard (an rc3-built .ko in a v7.2 tree loads as "invalid module format"
+# and the subsystem then silently never comes up) and the list had drifted out of sync with
+# both the kernel config and the asset tree: it asked for 16 modules where only 5 were
+# present, including smp2p_sleepstate.ko, which cannot exist at all while
+# CONFIG_QCOM_SMP2P_SLEEPSTATE is unset. v7.2 builds every driver we rely on itself -- camss,
+# imx355/imx363, v4l2-cci, slg51000, cs35l41, fastrpc, soundwire-qcom, i2c-qcom-cci, the
+# q6/TDM audio stack, qcom-wdt -- so install the lot and let depmod sort it out. The
+# per-driver rationale now lives in the kernel commits on branch sunfish-venus-v7.2.
+# NOTE INSTALL_MOD_PATH must be absolute. rmnt/lib is a merged-/usr symlink to usr/lib and
+# mkdir -p follows it, so modules land in rmnt/usr/lib/modules as intended -- see
+# work/RESCUE-INITRAMFS-SSH.md for what happens when a lib/ path replaces that symlink.
+# NOTE INSTALL_MOD_STRIP=1 needs the cross strip; the host x86 strip cannot read aarch64
+# modules and modules_install dies on the first one.
+make -C "$KSRC" modules_install $KMAKE INSTALL_MOD_PATH="$PWD/rmnt" INSTALL_MOD_STRIP=1
+[ -s "rmnt/lib/modules/$KVER/modules.dep" ] || {
+  echo "FATAL: modules_install left no modules.dep for $KVER" >&2; exit 1; }
+echo "modules installed: $(find "rmnt/lib/modules/$KVER" -name '*.ko*' | wc -l) for $KVER"
+# qcom-wdt is listed in modules-load.d, i.e. it is loaded from the INITRAMFS -- the
+# update-initramfs further down is what actually makes a change to it take effect, not the
+# copy into /lib/modules. Everything else autoloads from the DT.
+
+# --- sunfish audio userspace: saved mixer state (SEC_TDM_RX_0 routing + moderate amp
+# volumes), the UCM2 profile, the S16 sink override, and the CS35L41 CSPL firmware.
 if [ -d kernel ]; then
-  install -Dm644 kernel/snd-soc-sm8250.ko \
-    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/snd-soc-sm8250.ko"
-  install -Dm644 kernel/q6afe.ko \
-    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/qdsp6/q6afe.ko"
-  install -Dm644 kernel/q6afe-dai.ko \
-    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/qdsp6/q6afe-dai.ko"
-  install -Dm644 kernel/snd-soc-rt5514.ko \
-    "rmnt/lib/modules/$KVER/kernel/sound/soc/codecs/snd-soc-rt5514.ko"
-  install -Dm644 kernel/snd-soc-rl6231.ko \
-    "rmnt/lib/modules/$KVER/kernel/sound/soc/codecs/snd-soc-rl6231.ko"
-  # q6dsp-lpass-clocks publishes its drvdata before registering clocks; without
-  # that, an ADSP restart re-parents the still-prepared LPASS orphan clocks and
-  # calls .prepare with a NULL drvdata. That oops happens under the clock
-  # framework's prepare_lock, so it also wedges UFS runtime-resume and the rootfs.
-  install -Dm644 kernel/snd-q6dsp-common.ko \
-    "rmnt/lib/modules/$KVER/kernel/sound/soc/qcom/qdsp6/snd-q6dsp-common.ko"
-  # Suspend fix. The bootloader leaves the APSS watchdog running, so qcom-wdt sets
-  # WDOG_HW_RUNNING and the watchdog core pings it from a kernel worker. Workers are
-  # frozen while suspended and the stock qcom_wdt_suspend() only stops the hardware once
-  # userspace has opened /dev/watchdog, so it kept biting mid-suspend and resetting the
-  # phone -- which looked exactly like a broken resume. NB this module is listed in
-  # modules-load.d, so it is loaded from the INITRAMFS; the update-initramfs below is what
-  # actually makes this take effect, not the copy into /lib/modules.
-  install -Dm644 kernel/qcom-wdt.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/watchdog/qcom-wdt.ko"
-  # Rest of the suspend chain, all autoloaded (no modules-load.d entry needed).
-  # smp2p_sleepstate tells the ADSP over SMP2P that we are going down, so it stops
-  # handing us sensor reverse-RPC we can no longer service; without it the DSP takes a
-  # fatal error on the requests that were already in flight when the freezer ran.
-  install -Dm644 kernel/smp2p_sleepstate.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/soc/qcom/smp2p_sleepstate.ko"
-  # fastrpc freezes in its invoke wait instead of aborting it, so a task sitting in a
-  # FastRPC call is a freezable sleep rather than an -ERESTARTSYS the caller mishandles.
-  install -Dm644 kernel/fastrpc.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/misc/fastrpc.ko"
-  # soundwire-qcom stops touching the hardware once the ADSP is gone; the bus clock is
-  # owned by the LPASS macros, so post-SSR register access there is an external abort.
-  install -Dm644 kernel/soundwire-qcom.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/soundwire/soundwire-qcom.ko"
-  # i2c-qcom-cci never armed its autosuspend timer, so the camera control interface sat
-  # runtime-active with its clocks on for the whole uptime (nothing uses the camera, so the
-  # first get/put that would have idled it never came). That held 8 camcc clocks and kept
-  # the RPMh XO vote up: bi_tcxo prepare count 93 -> 15 with this in place.
-  install -Dm644 kernel/i2c-qcom-cci.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/i2c/busses/i2c-qcom-cci.ko"
-  # Both cameras: 8 MP IMX355 on CSIPHY2 (front) and 12 MP IMX363 on CSIPHY0
-  # (rear), all autoloaded from the DT.
-  # slg51000: the camera PMIC every camera rail hangs off. It needs the buck GPIO
-  # listed second in dlg,cs-gpios raised 5 ms before the chip select, or it never
-  # ACKs on i2c; it also had no OF match table, so udev could not autoload it.
-  # qcom-camss: SM7150 CSIPHY clocking. cphy_rx (parent of the csiphyN branches)
-  # must run at 384 MHz, not 300 -- at 300 the PHY sees the lanes but the CSID
-  # never gets a valid packet -- and CSIPHY0's clock must be on for every PHY.
-  install -Dm644 kernel/slg51000-regulator.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/regulator/slg51000-regulator.ko"
-  install -Dm644 kernel/imx355.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/media/i2c/imx355.ko"
-  # imx363 is the out-of-tree rear-camera driver; it needs the v4l2-cci regmap
-  # helper, which nothing else in this config pulls in.
-  install -Dm644 kernel/imx363.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/media/i2c/imx363.ko"
-  install -Dm644 kernel/v4l2-cci.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/media/v4l2-core/v4l2-cci.ko"
-  install -Dm644 kernel/qcom-camss.ko \
-    "rmnt/lib/modules/$KVER/kernel/drivers/media/platform/qcom/camss/qcom-camss.ko"
-  depmod -b rmnt "$KVER"
   install -Dm644 kernel/asound.state rmnt/var/lib/alsa/asound.state
   # UCM2 profile: PipeWire/WirePlumber pick up the card as a desktop sink
   # ("Internal stereo speakers"); hw volumes fixed safe, softvol on top.
