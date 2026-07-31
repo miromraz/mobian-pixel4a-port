@@ -1,7 +1,23 @@
 #!/bin/sh
 set -e
 cd /home/realni/pixel-a4-linux/mobian/work
-KVER=7.1.0-rc3-sm7150+
+KVER=7.1.0-sm7150+
+
+# The .ko files under kernel/ are overlaid into rmnt/lib/modules/$KVER and are only loadable
+# if they were built from the kernel that $KVER names. Refresh them from the v7.2 build
+# (branch sunfish-venus-v7.2) whenever KVER moves -- an rc3-built .ko dropped into a v7.2
+# tree loads as "invalid module format" and the subsystem silently never comes up, which is
+# exactly how the device ended up on a bare rc3 image with no audio/camera/NFC (2026-07-31).
+# Fail the build loudly rather than ship that.
+for _ko in kernel/*.ko; do
+  [ -e "$_ko" ] || continue
+  _vm=$(modinfo -F vermagic "$_ko" 2>/dev/null | awk '{print $1}')
+  if [ -n "$_vm" ] && [ "$_vm" != "$KVER" ]; then
+    echo "FATAL: $_ko has vermagic '$_vm' but KVER=$KVER -- rebuild kernel/*.ko for $KVER" >&2
+    exit 1
+  fi
+done
+unset _ko _vm
 
 simg2img userdata-nested.simg nested.img
 LOOP=$(losetup --sector-size 4096 -P --show -f nested.img)
@@ -336,6 +352,33 @@ if [ -d hexagonrpc ]; then
   ln -sf /etc/systemd/system/hexagonrpcd-adsp-sensorspd.service \
     rmnt/etc/systemd/system/multi-user.target.wants/hexagonrpcd-adsp-sensorspd.service
 fi
+# --- sensor start ORDER (2026-07-31). iio-sensor-proxy probes its backends exactly ONCE at
+# startup and never rescans. The ssc-accel backend needs hexagonrpcd to already be serving the
+# ADSP sensor registry, which cannot happen until the ADSP remoteproc is up (~32 s). If the
+# proxy probes before that it caches HasAccelerometer=false for the WHOLE boot -> KWin never
+# claims the accelerometer -> no auto-rotation. ALS/proximity frequently still succeed, so the
+# split (light yes, accel no) is the fingerprint of this race, and it looks per-boot flaky.
+# ★ Do NOT "fix" this by polling HasAccelerometer from a gate: the gdbus query itself
+# D-Bus-activates the proxy and poisons it. Order it, don't poll it.
+install -Dm644 /dev/stdin rmnt/etc/systemd/system/iio-sensor-proxy.service.d/10-after-hexagonrpcd.conf <<'UNIT'
+[Unit]
+Wants=hexagonrpcd-adsp-sensorspd.service
+After=hexagonrpcd-adsp-sensorspd.service hexagonrpcd-adsp-rootpd.service
+
+[Service]
+ExecStartPre=/bin/sh -c 'n=0; while [ "$(systemctl is-active hexagonrpcd-adsp-sensorspd)" != active ]; do n=$((n+1)); [ $n -ge 120 ] && break; sleep 0.5; done; sleep 4'
+UNIT
+# Hold the graphical session until the accelerometer is actually present, so KWin's one-shot
+# probe at session start sees it. Bounded and non-fatal on purpose: a sensor fault must never
+# block login (break, not exit 1).
+install -Dm644 /dev/stdin rmnt/etc/systemd/system/sddm.service.d/10-wait-for-sensors.conf <<'UNIT'
+[Unit]
+Wants=hexagonrpcd-adsp-sensorspd.service
+After=hexagonrpcd-adsp-sensorspd.service
+
+[Service]
+ExecStartPre=/bin/sh -c 'n=0; until [ "$(gdbus call --system -d net.hadess.SensorProxy -o /net/hadess/SensorProxy -m org.freedesktop.DBus.Properties.Get net.hadess.SensorProxy HasAccelerometer 2>/dev/null)" = "(<true>,)" ]; do n=$((n+1)); [ $n -ge 75 ] && break; sleep 1; done'
+UNIT
 # --- sunfish audio (kernel branch sunfish-audio-tdm): SEC_TDM speaker machine-driver
 # module + saved mixer state (SEC_TDM_RX_0 routing + moderate amp volumes), plus the
 # built-in-mic stack: RT5514P codec on tertiary TDM (snd-soc-rt5514 + rl6231 PLL lib)
@@ -603,7 +646,16 @@ sed -i 's# watchdog\.open_timeout=0# watchdog.open_timeout=0 quiet#' emnt/loader
 # that gcc + gpucc NEVER ran clk_sync_state, so their unused clocks were never gated, and the
 # NoC/rpmhpd clamps only lifted if something happened to bind later. `timeout` forces sync_state
 # once the deferred-probe timeout expires (CONFIG_DRIVER_DEFERRED_PROBE_TIMEOUT=10 is set).
-grep -q 'fw_devlink.sync_state=' emnt/loader/entries/mobian.conf || sed -i 's#^options #options fw_devlink.sync_state=timeout #' emnt/loader/entries/mobian.conf
+# ★★★ DO NOT re-add fw_devlink.sync_state=timeout (2026-07-31). On the v7.2 kernel it stops
+# the boot dead: the initramfs never reaches switch_root, so the bootloader-armed watchdog
+# resets the SoC ~70 s in, forever. The signature is a device that pings, answers rescue
+# dropbear on 2222 but refuses 22, with /root unmounted even though `subpart: offsetloop rc=0`
+# and blkid both succeeded and a manual `mount -t ext4 /dev/loop0 /root` works fine.
+# It is also no longer needed: the reason it was added was that camss/venus/gmu never bound,
+# so gcc+gpucc never ran clk_sync_state. On v7.2 camss DOES bind (real qcom,sm7150-camss
+# support), so the "sync_state() pending due to ace0000.camss" clamp lifts on its own.
+# Strip it if a base image carries it.
+sed -i -E 's# fw_devlink\.sync_state=[^ ]*##g' emnt/loader/entries/mobian.conf
 # root is mounted via an OFFSET loop on userdata -> resolve by fs UUID (PARTLABEL/PARTUUID don't apply to a bare-fs loop)
 sed -i "s#root=PARTLABEL=mobian_root#root=UUID=$RUUID#" emnt/loader/entries/mobian.conf
 sed -i "s#root=UUID=[^ ]* rw#root=UUID=$RUUID rw#" emnt/loader/entries/mobian.conf

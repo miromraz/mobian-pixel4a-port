@@ -20,4 +20,16 @@ for i in $(seq 1 25); do
   sleep 1
 done
 kscreen-doctor "output.$OUT.rotation.$rot" >/dev/null 2>&1
+# Auto-rotation (2026-07-31). KWin rotates only when the output's autoRotation permits it and
+# the default is InTabletMode; this device exposes no tablet-mode switch, so under
+# plasma.desktop KWin never claims the accelerometer and the screen never follows tilt --
+# even with sensors fully working. Prefer the live kscreen-doctor verb (Plasma 6.6+); older
+# kscreen-doctor (trixie's 6.3.6) has no autorotate verb, so fall back to editing the config,
+# which converges on the next login since KWin has already read it this session.
+# Plain string swap on purpose: no JSON parsing, so this cannot corrupt the file.
+if ! kscreen-doctor "output.$OUT.autorotate.always" >/dev/null 2>&1; then
+  KOC="$HOME/.config/kwinoutputconfig.json"
+  [ -f "$KOC" ] && sed -i \
+    's/"autoRotation"[[:space:]]*:[[:space:]]*"[^"]*"/"autoRotation": "Always"/g' "$KOC"
+fi
 exit 0
