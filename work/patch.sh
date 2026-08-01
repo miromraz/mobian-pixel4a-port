@@ -221,8 +221,17 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
     printf "deb http://deb.debian.org/debian forky main\n" > /etc/apt/sources.list.d/forky.list
     printf "Package: *\nPin: release n=forky\nPin-Priority: 100\n" > /etc/apt/preferences.d/99-forky-low
     apt-get update
+    # plasma-nm/nano/pa MUST be on the same major as plasma-mobile. The mobile shell 6.7
+    # imports org.kde.plasma.networkmanagement.cellular (via SignalStrengthInfo, pulled in by
+    # every MobileShell status type), and that QML module ships ONLY in plasma-nm 6.7 -- it is
+    # absent from trixie 6.3.4. Installing just plasma-mobile from forky leaves these three at
+    # trixie, so the whole MobileShell QML chain fails to resolve: the mobile LockScreen.qml
+    # falls back to the generic desktop locker (an ugly greeter) and the homescreen renders
+    # black. plasma-nano is the mobile shell base package, plasma-pa its audio applet, so pin
+    # all three to forky alongside plasma-mobile. (Diagnosed 2026-08-01 on a fresh build.)
+    # NOTE: no apostrophes in this block -- it runs inside a single-quoted sh -c string.
     apt-get install -y -t forky -o Dpkg::Options::=--force-confold \
-      plasma-workspace plasma-desktop plasma-mobile
+      plasma-workspace plasma-desktop plasma-mobile plasma-nm plasma-nano plasma-pa
     # feedbackd drives the Plasma MOBILE SHELL haptics (lock-screen keyboard +
     # quicksettings: HapticsEffect.buttonVibrate -> org.sigxcpu.Feedback.Haptic ->
     # drv2624). Separate path from the maliit/hfd keyboard haptics above. The forky
