@@ -6,8 +6,11 @@
 # tweaks + Plasma config on top.
 set -e
 cd "${WORK:-/home/realni/pixel-a4-linux/mobian/work}"
-OVERLAY=/home/realni/pixel-a4-linux/mobian/mobian-recipes/devices/sm7150/overlay-google-sunfish
-ROOTFS_TAR=/home/realni/pixel-a4-linux/mobian/mobian-recipes/rootfs-arm64-plasma-nonfree.tar.gz
+# Both default to the laptop build tree; override to run this on a box that only has the
+# two inputs staged (the firmware subtree is ~107 MB, the rootfs tarball ~950 MB).
+RECIPES=${RECIPES:-/home/realni/pixel-a4-linux/mobian/mobian-recipes}
+OVERLAY=${OVERLAY:-$RECIPES/devices/sm7150/overlay-google-sunfish}
+ROOTFS_TAR=${ROOTFS_TAR:-$RECIPES/rootfs-arm64-plasma-nonfree.tar.gz}
 
 echo "=== expand template ==="
 simg2img userdata-nested.simg nested.img
@@ -57,6 +60,8 @@ echo "=== repack to userdata-nested.simg ==="
 rm -f userdata-nested.simg
 img2simg nested.img userdata-nested.simg
 rm -f nested.img
-chown realni:realni userdata-nested.simg
+# See patch.sh: convenience only, and the account exists just on the laptop. The image is
+# already finished by this point, so never fail the run on it.
+chown realni:realni userdata-nested.simg 2>/dev/null || true
 ls -la userdata-nested.simg
 echo PREP_DONE

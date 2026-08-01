@@ -105,6 +105,11 @@ printf 'ACTION=="add", SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp*", ENV{IIO_SENSO
 # live console: last msg every cycle is "ipa 1e40000.ipa: IPA driver setup completed").
 # It's only network offload -> blacklist it so the device boots to Phosh.
 mkdir -p rmnt/etc/modprobe.d; printf 'blacklist ipa\ninstall ipa /bin/true\n' > rmnt/etc/modprobe.d/blacklist-ipa.conf
+# venus: decode is fine to autoload, but the encoder's CVP path silently hard-resets the SoC
+# at STREAMON (the dsp_ifaceq patch got S_FMT working, real CVP on the CDSP is still missing).
+# venus-enc registering an encoder node is enough for a media app to pick it and reset the
+# phone, so keep the module off. Blacklist only -- venus-dec/venus-core still autoload.
+printf 'blacklist venus_enc\n' > rmnt/etc/modprobe.d/sunfish-venus.conf
 # A/B slot persistence: mark the current boot slot successful at every boot, else the
 # bootloader falls back to the other slot after ~7 reboots and soft-bricks the device.
 # qbootctl here is the pmOS aarch64 build (musl). musl's loader path (/lib/ld-musl-*)
@@ -690,6 +695,8 @@ losetup -d "$LOOP"
 rm -f userdata-nested.simg
 img2simg nested.img userdata-nested.simg
 rm -f nested.img newinitrd
-chown realni:realni userdata-nested.simg
+# Convenience so the build user can read the artifact without sudo; the account only exists
+# on the laptop, and by this point the image is already finished, so never fail the run on it.
+chown realni:realni userdata-nested.simg 2>/dev/null || true
 ls -la userdata-nested.simg
 echo PATCH_DONE
