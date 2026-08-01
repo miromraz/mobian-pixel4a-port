@@ -260,6 +260,20 @@ chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noni
     # NOTE: no apostrophes in this block -- it runs inside a single-quoted sh -c string.
     apt-get install -y -t forky -o Dpkg::Options::=--force-confold \
       plasma-workspace plasma-desktop plasma-mobile plasma-nm plasma-nano plasma-pa
+    # Same skew class as the three above, one layer down: libcamera-ipa MUST match the
+    # libcamera runtime. camss on SM7150 is RDI-only (raw Bayer, no hardware demosaic), so
+    # libcamera does the debayer in software via ipa_soft_simple -- and it version-checks IPA
+    # modules and refuses a mismatched one. Left at trixie 0.4.0 beside libcamera0.7 there is
+    # no loadable IPA, hence no soft ISP: the stream can only be offered as SRGGB10_CSI2P, the
+    # requested size gets adjusted, configure() returns EINVAL and every camera app dies with
+    # "The configuration is not valid". Note -t forky does NOT prevent this by itself -- it is
+    # a preference, and apt still takes a dependency from trixie when that also satisfies it,
+    # which is exactly how libcamera-dev 0.7.2 and libcamera-ipa 0.4.0 landed side by side.
+    # gstreamer1.0-libcamera skews identically and breaks gstreamer camera pipelines.
+    # (Diagnosed 2026-08-01 on the live device; symptom was a camera app that never previewed.)
+    # NOTE: no apostrophes in this block -- it runs inside a single-quoted sh -c string.
+    apt-get install -y -t forky -o Dpkg::Options::=--force-confold \
+      libcamera-ipa gstreamer1.0-libcamera
     # feedbackd drives the Plasma MOBILE SHELL haptics (lock-screen keyboard +
     # quicksettings: HapticsEffect.buttonVibrate -> org.sigxcpu.Feedback.Haptic ->
     # drv2624). Separate path from the maliit/hfd keyboard haptics above. The forky
