@@ -22,3 +22,11 @@ work/wcn/bin/
 # blobs; these two were the gaps that let firmware in.
 *.wmfw
 *.jsn
+# Built kernel/hexagonrpcd outputs — you build these yourself and drop them into
+# the overlay; they are stale within a couple of weeks and not committed here.
+# See README.md "Kernel source" and the "build the kernel" install step.
+vmlinuz*
+*.dtb
+modules.*
+work/hexagonrpc/bin/
+work/hexagonrpc/lib/

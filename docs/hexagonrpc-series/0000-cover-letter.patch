@@ -1,0 +1,60 @@
+From 3291f5025c24b0c5bf0c7739fba468011b9f9b81 Mon Sep 17 00:00:00 2001
+From: miromraz <mraz.miro@seznam.cz>
+Date: Sat, 1 Aug 2026 17:31:21 +0200
+Subject: [PATCH 0/3] hexagonrpcd: Pixel 4a (sunfish) ADSP sensor bring-up
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+These three patches make hexagonrpcd serve the sensor bring-up FastRPC
+traffic the Pixel 4a (sunfish) ADSP needs, so the SEE/CHRE sensor firmware
+comes up on mainline Linux. They apply on top of upstream linux-msm/hexagonrpc
+commit 23a6964 ("tools: make json-c optional").
+
+Together they take the sunfish sensor stack from "ADSP crashes on boot" to
+accelerometer/ALS/proximity working end to end (KWin auto-rotation, iio-
+sensor-proxy). The port that uses them lives at
+github.com/miromraz/mobian-pixel4a-port; the built binary and library are not
+committed there, so build this series and drop them into the image.
+
+  1. ADSP sensor-registry support for Pixel 4a (sunfish) -- serves the
+     sensor registry tree (config + per-sensor registry entries) the SEE
+     framework reads over the apps_std/hexagonfs endpoints, so the sensor
+     firmware finds its calibration and platform config instead of faulting.
+
+  2. fix heap overflow in apps_std_stat in-place path -- the in-place stat
+     path wrote past the caller's buffer; caught with ASan while the ADSP
+     hammered stat() during registry enumeration. Correctness/safety fix.
+
+  3. serve sns_registry platform values (raw sysfs format) -- exposes the
+     platform registry values in the raw sysfs format the sensor firmware
+     expects, completing the registry the ADSP consults at bring-up.
+
+miromraz (3):
+  hexagonrpcd: ADSP sensor-registry support for Pixel 4a (sunfish)
+  hexagonrpcd: fix heap overflow in apps_std_stat in-place path
+  hexagonrpcd: serve sns_registry platform values (raw sysfs format)
+
+ .gitignore                          |   1 +
+ cross-arm64.txt                     |   9 ++
+ hexagonrpcd/apps_std.c              | 136 +++++++++++++++++-----
+ hexagonrpcd/hexagonfs.c             |  74 ++++++++++++
+ hexagonrpcd/hexagonfs.h             |  12 ++
+ hexagonrpcd/hexagonfs_mapped.c      |  48 +++++++-
+ hexagonrpcd/interfaces/apps_std.def |   2 +
+ hexagonrpcd/listener.c              |  73 +++++++++---
+ hexagonrpcd/meson.build             |   1 +
+ hexagonrpcd/rpcd.c                  |   5 +-
+ hexagonrpcd/rpcd_builder.c          |  23 +++-
+ hexagonrpcd/sns_registry.c          | 167 ++++++++++++++++++++++++++++
+ hexagonrpcd/sns_registry.h          |  30 +++++
+ tests/test_hexagonfs.c              |  63 +++++++++++
+ 14 files changed, 592 insertions(+), 52 deletions(-)
+ create mode 100644 .gitignore
+ create mode 100644 cross-arm64.txt
+ create mode 100644 hexagonrpcd/sns_registry.c
+ create mode 100644 hexagonrpcd/sns_registry.h
+
+-- 
+2.55.0
+

@@ -1,5 +1,0 @@
-# Soft dependencies extracted from modules themselves.
-softdep ipmi_msghandler post: ipmi_devintf
-softdep genet pre: mdio-bcm-unimac
-softdep r8169 pre: realtek
-softdep xt_LOG pre: nf_log_syslog

@@ -1,0 +1,984 @@
+From 3ee8aad499c586933f7c620fe6702af0049da68e Mon Sep 17 00:00:00 2001
+From: miromraz <mraz.miro@seznam.cz>
+Date: Sun, 31 May 2026 00:32:07 +0200
+Subject: [PATCH 1/3] hexagonrpcd: ADSP sensor-registry support for Pixel 4a
+ (sunfish)
+
+The sunfish (sm7150) SLPI firmware crash-loops (sar.cc:27 chre_utils
+fatal -> full ADSP SSR every ~10s) because mainline can't serve its
+sensor registry the way the firmware expects. Each SSR tears down the
+LPASS audio core, which is why speaker audio never gets a stable bit
+clock. This adds the pieces needed for the firmware to build its
+registry over FastRPC.
+
+Write support (registry rebuild):
+- apps_std: fopen 'w'/'a' modes + fwrite (method 5), backed by a
+  writable leaf-open flag and a mapped write op.
+- apps_std: mkdir (method 24) so the firmware can create its registry
+  working dirs. ABI determined from the wire (in_nums=0, in_bufs=1);
+  plumbed hexagonfs_mkdir -> mapped_mkdir (mkdirat, EEXIST ok).
+- rpcd_builder: map sns_reg_version + temp.json siblings of the
+  registry dir.
+
+Listener robustness:
+- Make unsupported handle/method/buffer-count non-fatal: report the
+  error to the DSP and keep serving instead of exiting the listener
+  (a single unsupported call used to kill the daemon and drop the
+  registry service, restarting the crash loop).
+- Raise the input-buffer cap 256B -> 64KB; the firmware writes its
+  rebuilt registry (temp.json, ~2.7KB) in large chunks.
+
+sns_registry reverse interface (WIP):
+- Register an apps-side "sns_registry" local interface so the
+  firmware's apps_remotectl_open() succeeds. Method 0 decoded as
+  "read registry group by name" (e.g. "hw_platform"); response-data
+  synthesis and the remaining methods are still to do.
+
+cross-arm64.txt: meson cross file for building on a glibc x86_64 host
+for a Debian aarch64 target.
+
+With these, the firmware now fully reads its registry blobs/configs
+and writes temp.json; remaining work is the sns_registry response
+format (see project notes).
+---
+ .gitignore                          |   1 +
+ cross-arm64.txt                     |   9 +++
+ hexagonrpcd/apps_std.c              |  93 ++++++++++++++++++---
+ hexagonrpcd/hexagonfs.c             |  74 +++++++++++++++++
+ hexagonrpcd/hexagonfs.h             |  12 +++
+ hexagonrpcd/hexagonfs_mapped.c      |  48 ++++++++++-
+ hexagonrpcd/interfaces/apps_std.def |   2 +
+ hexagonrpcd/listener.c              |  73 ++++++++++++-----
+ hexagonrpcd/meson.build             |   1 +
+ hexagonrpcd/rpcd.c                  |   5 +-
+ hexagonrpcd/rpcd_builder.c          |  23 +++++-
+ hexagonrpcd/sns_registry.c          | 121 ++++++++++++++++++++++++++++
+ hexagonrpcd/sns_registry.h          |  30 +++++++
+ tests/test_hexagonfs.c              |  63 +++++++++++++++
+ 14 files changed, 518 insertions(+), 37 deletions(-)
+ create mode 100644 .gitignore
+ create mode 100644 cross-arm64.txt
+ create mode 100644 hexagonrpcd/sns_registry.c
+ create mode 100644 hexagonrpcd/sns_registry.h
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..ea1472e
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1 @@
++output/
+diff --git a/cross-arm64.txt b/cross-arm64.txt
+new file mode 100644
+index 0000000..1d276c1
+--- /dev/null
++++ b/cross-arm64.txt
+@@ -0,0 +1,9 @@
++[binaries]
++c = 'aarch64-linux-gnu-gcc'
++strip = 'aarch64-linux-gnu-strip'
++
++[host_machine]
++system = 'linux'
++cpu_family = 'aarch64'
++cpu = 'aarch64'
++endian = 'little'
+diff --git a/hexagonrpcd/apps_std.c b/hexagonrpcd/apps_std.c
+index 06519f8..42ed3e9 100644
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include <errno.h>
++#include <fcntl.h>
+ #include <stdio.h>
+ #include <stdint.h>
+ #include <string.h>
+@@ -120,6 +121,35 @@ static uint32_t apps_std_fread(void *data,
+ 	return 0;
+ }
+ 
++static uint32_t apps_std_fwrite(void *data,
++				const struct fastrpc_io_buffer *inbufs,
++				struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const struct {
++		uint32_t fd;
++		uint32_t buf_size;
++	} *first_in = inbufs[0].p;
++	struct {
++		uint32_t written;
++	} *first_out = outbufs[0].p;
++	ssize_t ret;
++
++	ret = hexagonfs_write(ctx->fds, first_in->fd, inbufs[1].s, inbufs[1].p);
++	if (ret < 0) {
++		fprintf(stderr, "Could not write file: %s\n", strerror(-ret));
++		return AEE_EFAILED;
++	}
++
++#ifdef HEXAGONRPC_VERBOSE
++	printf("write(%u, %u) -> %ld\n", first_in->fd, inbufs[1].s, ret);
++#endif
++
++	first_out->written = ret;
++
++	return 0;
++}
++
+ static uint32_t apps_std_fseek(void *data,
+ 			       const struct fastrpc_io_buffer *inbufs,
+ 			       struct fastrpc_io_buffer *outbufs)
+@@ -157,7 +187,7 @@ static uint32_t apps_std_fopen_with_env(void *data,
+ 	struct apps_std_ctx *ctx = data;
+ 	uint32_t *out = outbufs[0].p;
+ 	char rw_mode;
+-	int dirfd, fd;
++	int dirfd, fd, wflags = 0;
+ 
+ 	// The name and environment variable must also be NULL-terminated
+ 	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0
+@@ -165,12 +195,12 @@ static uint32_t apps_std_fopen_with_env(void *data,
+ 	 || ((const char *) inbufs[4].p)[inbufs[4].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
++	/* sunfish: support write modes so the ADSP can build its sensor registry */
+ 	rw_mode = ((const char *) inbufs[4].p)[0];
+-	if (rw_mode == 'w' || rw_mode == 'a') {
+-		fprintf(stderr, "Tried to open %s for writing\n",
+-				(const char *) inbufs[3].p);
+-		return AEE_EUNSUPPORTED;
+-	}
++	if (rw_mode == 'w')
++		wflags = O_RDWR | O_CREAT | O_TRUNC;
++	else if (rw_mode == 'a')
++		wflags = O_RDWR | O_CREAT | O_APPEND;
+ 
+ 	if (!strcmp(inbufs[1].p, "ADSP_LIBRARY_PATH")) {
+ 		dirfd = ctx->adsp_library_dirfd;
+@@ -188,11 +218,14 @@ static uint32_t apps_std_fopen_with_env(void *data,
+ 		return AEE_EFAILED;
+ 	}
+ 
++	hexagonfs_leaf_open_flags = wflags;
+ 	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, dirfd, inbufs[3].p);
++	hexagonfs_leaf_open_flags = 0;
+ 	if (fd < 0) {
+-		fprintf(stderr, "Could not open %s: %s\n",
++		fprintf(stderr, "Could not open %s (%s): %s\n",
+ 				(const char *) inbufs[3].p,
+-				strerror(errno));
++				wflags ? "write" : "read",
++				strerror(-fd));
+ 		return AEE_EFAILED;
+ 	}
+ 
+@@ -304,7 +337,7 @@ static uint32_t apps_std_stat(void *data,
+ 		int64_t mtimensec;
+ 		int64_t ctime;
+ 		int64_t ctimensec;
+-	} *first_out = outbufs[0].p;
++	} *first_out = outbufs ? outbufs[0].p : inbufs[2].p;
+ 	const char *pathname = inbufs[1].p;
+ 	struct stat stats;
+ 	int fd, ret;
+@@ -350,6 +383,38 @@ static uint32_t apps_std_stat(void *data,
+ 	return 0;
+ }
+ 
++/*
++ * sunfish: the ADSP sensor firmware creates registry working directories while
++ * rebuilding its sensor registry. Without this the call returns "unsupported"
++ * and the CHRE sensor_process asserts (sar.cc:27), crashing the whole ADSP.
++ * The method passes no mode (in_nums=0); inbufs[1] is the (NUL-terminated) path.
++ */
++static uint32_t apps_std_mkdir(void *data,
++			       const struct fastrpc_io_buffer *inbufs,
++			       struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const char *name = inbufs[1].p;
++	int ret;
++
++	// The name must be NULL-terminated
++	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
++		return AEE_EBADPARM;
++
++	ret = hexagonfs_mkdir(ctx->fds, ctx->rootfd, ctx->rootfd, name, 0755);
++	if (ret) {
++		fprintf(stderr, "Could not mkdir %s: %s\n",
++				name, strerror(-ret));
++		return AEE_EFAILED;
++	}
++
++#ifdef HEXAGONRPC_VERBOSE
++	printf("mkdir(%s)\n", name);
++#endif
++
++	return 0;
++}
++
+ struct fastrpc_interface *fastrpc_apps_std_init(struct hexagonfs_dirent *root)
+ {
+ 	struct fastrpc_interface *iface;
+@@ -419,7 +484,10 @@ static const struct fastrpc_function_impl apps_std_procs[] = {
+ 		.def = &apps_std_fread_def,
+ 		.impl = apps_std_fread,
+ 	},
+-	{ .def = NULL, .impl = NULL, },
++	{
++		.def = &apps_std_fwrite_def,
++		.impl = apps_std_fwrite,
++	},
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+@@ -444,7 +512,10 @@ static const struct fastrpc_function_impl apps_std_procs[] = {
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
++	{
++		.def = &apps_std_mkdir_def,
++		.impl = apps_std_mkdir,
++	},
+ 	{ .def = NULL, .impl = NULL, },
+ 	{
+ 		.def = &apps_std_opendir_def,
+diff --git a/hexagonrpcd/hexagonfs.c b/hexagonrpcd/hexagonfs.c
+index bd9f353..94463ea 100644
+--- a/hexagonrpcd/hexagonfs.c
++++ b/hexagonrpcd/hexagonfs.c
+@@ -29,6 +29,8 @@
+ 
+ #include "hexagonfs.h"
+ 
++int hexagonfs_leaf_open_flags = 0;
++
+ static char *copy_segment_and_advance(const char *path,
+ 				      bool *trailing_slash,
+ 				      const char **next)
+@@ -244,6 +246,78 @@ ssize_t hexagonfs_read(struct hexagonfs_fd **fds, int fileno, size_t size, void
+ 	return fd->ops->read(fd, size, ptr);
+ }
+ 
++ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr)
++{
++	struct hexagonfs_fd *fd;
++
++	if (fileno < 0 || fileno >= HEXAGONFS_MAX_FD)
++		return -EBADF;
++
++	fd = fds[fileno];
++	if (fd == NULL)
++		return -EBADF;
++
++	if (fd->ops->write == NULL)
++		return -ENOSYS;
++
++	return fd->ops->write(fd, size, ptr);
++}
++
++/*
++ * sunfish: create a directory in the underlying real filesystem so the ADSP
++ * sensor firmware can build its registry working dirs. Resolves the parent of
++ * `name` to a mapped (real) directory, then delegates to its mkdir op for the
++ * basename. Only directories backed by a real fs (hexagonfs_mapped_ops) can be
++ * created in; virtual dirs return -ENOSYS.
++ */
++int hexagonfs_mkdir(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name, mode_t mode)
++{
++	char *parent, *base;
++	const char *slash;
++	int pfd, ret;
++
++	slash = strrchr(name, '/');
++	if (slash == NULL) {
++		parent = strdup(".");
++		base = strdup(name);
++	} else if (slash == name) {
++		parent = strdup("/");
++		base = strdup(slash + 1);
++	} else {
++		parent = strndup(name, slash - name);
++		base = strdup(slash + 1);
++	}
++
++	if (parent == NULL || base == NULL) {
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	/* reject trailing-slash paths (no basename to create) */
++	if (*base == '\0') {
++		ret = -EINVAL;
++		goto out;
++	}
++
++	pfd = hexagonfs_openat(fds, rootfd, dirfd, parent);
++	if (pfd < 0) {
++		ret = pfd;
++		goto out;
++	}
++
++	if (fds[pfd]->ops->mkdir == NULL)
++		ret = -ENOSYS;
++	else
++		ret = fds[pfd]->ops->mkdir(fds[pfd], base, mode);
++
++	hexagonfs_close(fds, pfd);
++
++out:
++	free(parent);
++	free(base);
++	return ret;
++}
++
+ int hexagonfs_readdir(struct hexagonfs_fd **fds, int fileno, size_t ent_size, char *ent)
+ {
+ 	struct hexagonfs_fd *fd;
+diff --git a/hexagonrpcd/hexagonfs.h b/hexagonrpcd/hexagonfs.h
+index 7682604..5d0859b 100644
+--- a/hexagonrpcd/hexagonfs.h
++++ b/hexagonrpcd/hexagonfs.h
+@@ -40,6 +40,8 @@ struct hexagonfs_file_ops {
+ 		      struct hexagonfs_fd **out);
+ 	int (*readdir)(struct hexagonfs_fd *fd, size_t size, char *out);
+ 	ssize_t (*read)(struct hexagonfs_fd *fd, size_t size, void *ptr);
++	ssize_t (*write)(struct hexagonfs_fd *fd, size_t size, const void *ptr);
++	int (*mkdir)(struct hexagonfs_fd *dir, const char *segment, mode_t mode);
+ 	int (*stat)(struct hexagonfs_fd *fd, struct stat *stats);
+ 	int (*seek)(struct hexagonfs_fd *fd, off_t off, int whence);
+ };
+@@ -77,5 +79,15 @@ int hexagonfs_fstat(struct hexagonfs_fd **fds, int fileno, struct stat *stats);
+ int hexagonfs_lseek(struct hexagonfs_fd **fds, int fileno, off_t pos, int whence);
+ int hexagonfs_readdir(struct hexagonfs_fd **fds, int fileno, size_t size, char *name);
+ ssize_t hexagonfs_read(struct hexagonfs_fd **fds, int fileno, size_t size, void *ptr);
++ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr);
++int hexagonfs_mkdir(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name, mode_t mode);
++
++/*
++ * sunfish: when non-zero, the next leaf file opened via hexagonfs_openat() is
++ * opened with these open(2) flags (e.g. O_RDWR|O_CREAT|O_TRUNC) instead of
++ * O_RDONLY, so apps_std fopen() can support 'w'/'a' modes. Single-threaded
++ * daemon: set immediately before hexagonfs_openat() and reset to 0 after.
++ */
++extern int hexagonfs_leaf_open_flags;
+ 
+ #endif
+diff --git a/hexagonrpcd/hexagonfs_mapped.c b/hexagonrpcd/hexagonfs_mapped.c
+index fd28c8c..28c5a7a 100644
+--- a/hexagonrpcd/hexagonfs_mapped.c
++++ b/hexagonrpcd/hexagonfs_mapped.c
+@@ -26,6 +26,7 @@
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <sys/stat.h>
+ #include <sys/types.h>
+ 
+ #include "hexagonfs.h"
+@@ -52,16 +53,21 @@ static int mapped_from_dirent(const void *dirent_data, bool dir, void **fd_data)
+ 	struct mapped_ctx *ctx;
+ 	const char *name = dirent_data;
+ 	int flags = O_RDONLY;
++	mode_t mode = 0;
+ 	int ret;
+ 
+ 	ctx = malloc(sizeof(struct mapped_ctx));
+ 	if (ctx == NULL)
+ 		return -ENOMEM;
+ 
+-	if (dir)
++	if (dir) {
+ 		flags |= O_DIRECTORY;
++	} else if (hexagonfs_leaf_open_flags) {
++		flags = hexagonfs_leaf_open_flags;
++		mode = 0644;
++	}
+ 
+-	ctx->fd = open(name, flags);
++	ctx->fd = open(name, flags, mode);
+ 	if (ctx->fd == -1) {
+ 		ret = -errno;
+ 		goto err;
+@@ -87,6 +93,7 @@ static int mapped_openat(struct hexagonfs_fd *dir,
+ 	struct hexagonfs_fd *fd;
+ 	struct mapped_ctx *ctx;
+ 	int flags = O_RDONLY;
++	mode_t mode = 0;
+ 	int ret;
+ 
+ 	ctx = malloc(sizeof(struct mapped_ctx));
+@@ -99,10 +106,15 @@ static int mapped_openat(struct hexagonfs_fd *dir,
+ 		goto err;
+ 	}
+ 
+-	if (expect_dir)
++	if (expect_dir) {
+ 		flags |= O_DIRECTORY;
++	} else if (hexagonfs_leaf_open_flags) {
++		/* sunfish: open this leaf writable (and create it) for fopen 'w'/'a' */
++		flags = hexagonfs_leaf_open_flags;
++		mode = 0644;
++	}
+ 
+-	ctx->fd = openat(dir_ctx->fd, segment, flags);
++	ctx->fd = openat(dir_ctx->fd, segment, flags, mode);
+ 	if (ctx->fd == -1) {
+ 		ret = -errno;
+ 		goto err_free_fd;
+@@ -138,6 +150,32 @@ static ssize_t mapped_read(struct hexagonfs_fd *fd, size_t size, void *out)
+ 	return ret;
+ }
+ 
++static ssize_t mapped_write(struct hexagonfs_fd *fd, size_t size, const void *in)
++{
++	struct mapped_ctx *ctx = fd->data;
++	ssize_t ret;
++
++	ret = write(ctx->fd, in, size);
++	if (ret < 0)
++		return -errno;
++
++	return ret;
++}
++
++static int mapped_mkdir(struct hexagonfs_fd *dir, const char *segment, mode_t mode)
++{
++	struct mapped_ctx *ctx = dir->data;
++
++	if (mkdirat(ctx->fd, segment, mode) == -1) {
++		/* an already-present registry dir is fine */
++		if (errno == EEXIST)
++			return 0;
++		return -errno;
++	}
++
++	return 0;
++}
++
+ static int mapped_readdir(struct hexagonfs_fd *fd, size_t size, char *out)
+ {
+ 	struct mapped_ctx *ctx = fd->data;
+@@ -327,6 +365,8 @@ struct hexagonfs_file_ops hexagonfs_mapped_ops = {
+ 	.from_dirent = mapped_from_dirent,
+ 	.openat = mapped_openat,
+ 	.read = mapped_read,
++	.write = mapped_write,
++	.mkdir = mapped_mkdir,
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
+ 	.stat = mapped_stat,
+diff --git a/hexagonrpcd/interfaces/apps_std.def b/hexagonrpcd/interfaces/apps_std.def
+index 2fbbdb1..251f007 100644
+--- a/hexagonrpcd/interfaces/apps_std.def
++++ b/hexagonrpcd/interfaces/apps_std.def
+@@ -28,8 +28,10 @@ HEXAGONRPC_DEFINE_REMOTE_METHOD(1, apps_std_freopen, 1, 0, 1, 1)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(2, apps_std_fflush, 8, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(3, apps_std_fclose, 1, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(4, apps_std_fread, 1, 0, 2, 1)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(5, apps_std_fwrite, 1, 1, 1, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(9, apps_std_fseek, 3, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(19, apps_std_fopen_with_env, 0, 4, 1, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(24, apps_std_mkdir, 0, 1, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(26, apps_std_opendir, 0, 1, 2, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(27, apps_std_closedir, 2, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(28, apps_std_readdir, 2, 0, 66, 0)
+diff --git a/hexagonrpcd/listener.c b/hexagonrpcd/listener.c
+index 932c54d..6952d9a 100644
+--- a/hexagonrpcd/listener.c
++++ b/hexagonrpcd/listener.c
+@@ -22,6 +22,7 @@
+ #include <inttypes.h>
+ #include <libhexagonrpc/fastrpc.h>
+ #include <libhexagonrpc/interfaces/remotectl.def>
++#include <stdbool.h>
+ #include <stddef.h>
+ #include <stdio.h>
+ 
+@@ -142,7 +143,12 @@ static int return_for_next_invoke(int fd,
+ 				  struct fastrpc_io_buffer **decoded)
+ {
+ 	struct fastrpc_decoder_context *ctx;
+-	char inbufs[256];
++	/*
++	 * sunfish: the ADSP writes its rebuilt sensor registry (temp.json) in
++	 * buffers larger than 256B; a small cap made the daemon abort mid-write
++	 * and the ADSP crash-looped. Give the listener room for those writes.
++	 */
++	char inbufs[65536];
+ 	char *outbufs = NULL;
+ 	uint32_t inbufs_len;
+ 	uint32_t outbufs_len;
+@@ -164,7 +170,7 @@ static int return_for_next_invoke(int fd,
+ 				  *rctx, result,
+ 				  outbufs_len, outbufs,
+ 				  rctx, handle, sc,
+-				  &inbufs_len, 256, inbufs);
++				  &inbufs_len, sizeof(inbufs), inbufs);
+ 	if (ret) {
+ 		if (ret == -1)
+ 			perror("Could not fetch next FastRPC message");
+@@ -174,8 +180,9 @@ static int return_for_next_invoke(int fd,
+ 		goto err_free_outbufs;
+ 	}
+ 
+-	if (inbufs_len > 256) {
+-		fprintf(stderr, "Large (>256B) input buffers aren't implemented\n");
++	if (inbufs_len > sizeof(inbufs)) {
++		fprintf(stderr, "Input buffer too large: %u > %zu\n",
++				inbufs_len, sizeof(inbufs));
+ 		ret = -1;
+ 		goto err_free_outbufs;
+ 	}
+@@ -218,6 +225,7 @@ static int invoke_requested_procedure(size_t n_ifaces,
+ 	uint8_t in_count;
+ 	uint8_t out_count;
+ 	uint32_t method = REMOTE_SCALARS_METHOD(sc);
++	bool apps_std_stat_inplace = false;
+ 	int ret;
+ 
+ 	if (sc & 0xff) {
+@@ -254,22 +262,34 @@ static int invoke_requested_procedure(size_t n_ifaces,
+ 
+ 	if (REMOTE_SCALARS_INBUFS(sc) != in_count
+ 	 || REMOTE_SCALARS_OUTBUFS(sc) != out_count) {
+-		fprintf(stderr, "Unexpected buffer count: %08x\n", sc);
+-		*result = AEE_EBADPARM;
+-		return 1;
++		if (handle == 1 && method == 31
++		 && REMOTE_SCALARS_INBUFS(sc) == 3
++		 && REMOTE_SCALARS_OUTBUFS(sc) == 0) {
++			apps_std_stat_inplace = true;
++		} else {
++			fprintf(stderr, "Unexpected buffer count: %08x\n", sc);
++			*result = AEE_EBADPARM;
++			return 1;
++		}
+ 	}
+ 
+-	ret = check_inbuf_sizes(impl->def, decoded);
+-	if (ret) {
+-		*result = AEE_EBADPARM;
+-		return 1;
++	if (!apps_std_stat_inplace) {
++		ret = check_inbuf_sizes(impl->def, decoded);
++		if (ret) {
++			*result = AEE_EBADPARM;
++			return 1;
++		}
+ 	}
+ 
+-	*returned = allocate_outbufs(impl->def, decoded[0].p);
+-	if (*returned == NULL && out_count > 0) {
+-		perror("Could not allocate output buffers");
+-		*result = AEE_ENOMEMORY;
+-		return 1;
++	if (apps_std_stat_inplace) {
++		*returned = NULL;
++	} else {
++		*returned = allocate_outbufs(impl->def, decoded[0].p);
++		if (*returned == NULL && out_count > 0) {
++			perror("Could not allocate output buffers");
++			*result = AEE_ENOMEMORY;
++			return 1;
++		}
+ 	}
+ 
+ 	*result = impl->impl(ifaces[handle]->data, decoded, *returned);
+@@ -309,8 +329,25 @@ int run_fastrpc_listener(int fd,
+ 		ret = invoke_requested_procedure(n_ifaces, ifaces,
+ 						 handle, sc, &result,
+ 						 decoded, &returned);
+-		if (ret)
+-			break;
++		if (ret) {
++			/*
++			 * sunfish: an unsupported handle/method/buffer-count is
++			 * not fatal. `result` already carries the error code;
++			 * report it to the DSP on the next cycle and keep the
++			 * listener alive so the sensor registry service stays up.
++			 * If the daemon exited here the DSP would lose its
++			 * registry and the ADSP would crash-loop (sar.cc:27).
++			 */
++			if (decoded != NULL) {
++				iobuf_free(REMOTE_SCALARS_INBUFS(sc), decoded);
++				decoded = NULL;
++			}
++			returned = NULL;
++			n_outbufs = 0;
++			sc = REMOTE_SCALARS_MAKE(0, 0, 0);
++			ret = 0;
++			continue;
++		}
+ 
+ 		if (decoded != NULL)
+ 			iobuf_free(REMOTE_SCALARS_INBUFS(sc), decoded);
+diff --git a/hexagonrpcd/meson.build b/hexagonrpcd/meson.build
+index 3d1e9d1..47da5f1 100644
+--- a/hexagonrpcd/meson.build
++++ b/hexagonrpcd/meson.build
+@@ -12,6 +12,7 @@ executable('hexagonrpcd',
+   'localctl.c',
+   'rpcd.c',
+   'rpcd_builder.c',
++  'sns_registry.c',
+   c_args : cflags,
+   include_directories : include,
+   install : true,
+diff --git a/hexagonrpcd/rpcd.c b/hexagonrpcd/rpcd.c
+index cc1f5cf..b99b7f2 100644
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -42,6 +42,7 @@
+ #include "listener.h"
+ #include "localctl.h"
+ #include "rpcd_builder.h"
++#include "sns_registry.h"
+ 
+ static int remotectl_open(int fd, char *name, struct fastrpc_context **ctx, void (*err_cb)(const char *err))
+ {
+@@ -254,7 +255,7 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *ds
+ {
+ 	struct fastrpc_interface **ifaces;
+ 	struct hexagonfs_dirent *root_dir;
+-	size_t n_ifaces = 3;
++	size_t n_ifaces = 4;
+ 	int ret;
+ 
+ 	ifaces = malloc(sizeof(struct fastrpc_interface) * n_ifaces);
+@@ -273,6 +274,7 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *ds
+ 	// Dynamic interfaces with no hardcoded handle
+ 	ifaces[1] = fastrpc_apps_std_init(root_dir);
+ 	ifaces[2] = fastrpc_apps_mem_init(fd);
++	ifaces[3] = fastrpc_sns_registry_init();
+ 
+ 	ret = register_fastrpc_listener(fd);
+ 	if (ret)
+@@ -281,6 +283,7 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *ds
+ 	run_fastrpc_listener(fd, n_ifaces, ifaces);
+ 
+ 	fastrpc_localctl_deinit(ifaces[REMOTECTL_HANDLE]);
++	fastrpc_sns_registry_deinit(ifaces[3]);
+ 
+ 	free(ifaces);
+ 
+diff --git a/hexagonrpcd/rpcd_builder.c b/hexagonrpcd/rpcd_builder.c
+index d374958..fa29ff2 100644
+--- a/hexagonrpcd/rpcd_builder.c
++++ b/hexagonrpcd/rpcd_builder.c
+@@ -30,6 +30,8 @@
+ #define DSP_LIBS		"/dsp/"
+ #define SENSORS_CONFIG		"/sensors/config/"
+ #define SENSORS_REGISTRY	"/sensors/registry/"
++#define SNS_REG_VERSION		"/sensors/registry/sns_reg_version"
++#define SNS_REG_TEMP_JSON	"/sensors/registry/temp.json"
+ #define SNS_REG_CONFIG		"/sensors/sns_reg.conf"
+ #define SYSFS_SOCINFO		"/socinfo/"
+ 
+@@ -111,7 +113,8 @@ static struct hexagonfs_dirent *hfs_map_or_empty(const char *name, const char *p
+  */
+ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ {
+-	char *acdbdata, *dsp_libs, *sns_cfg, *sns_reg, *sns_reg_config, *socinfo;
++	char *acdbdata, *dsp_libs, *sns_cfg, *sns_reg, *sns_reg_config;
++	char *sns_reg_version, *sns_reg_temp_json, *socinfo;
+ 	size_t n_prefix;
+ 	struct hexagonfs_dirent *persist_dir, *vendor_dir;
+ 
+@@ -120,6 +123,8 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 	acdbdata = malloc(n_prefix + strlen(ACDBDATA) + 1);
+ 	sns_cfg = malloc(n_prefix + strlen(SENSORS_CONFIG) + 1);
+ 	sns_reg = malloc(n_prefix + strlen(SENSORS_REGISTRY) + 1);
++	sns_reg_version = malloc(n_prefix + strlen(SNS_REG_VERSION) + 1);
++	sns_reg_temp_json = malloc(n_prefix + strlen(SNS_REG_TEMP_JSON) + 1);
+ 	sns_reg_config = malloc(n_prefix + strlen(SNS_REG_CONFIG) + 1);
+ 	socinfo = malloc(n_prefix + strlen(SYSFS_SOCINFO) + 1);
+ 
+@@ -140,6 +145,16 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 		strcat(sns_reg, SENSORS_REGISTRY);
+ 	}
+ 
++	if (sns_reg_version != NULL) {
++		strcpy(sns_reg_version, prefix);
++		strcat(sns_reg_version, SNS_REG_VERSION);
++	}
++
++	if (sns_reg_temp_json != NULL) {
++		strcpy(sns_reg_temp_json, prefix);
++		strcat(sns_reg_temp_json, SNS_REG_TEMP_JSON);
++	}
++
+ 	if (sns_reg_config != NULL) {
+ 		strcpy(sns_reg_config, prefix);
+ 		strcat(sns_reg_config, SNS_REG_CONFIG);
+@@ -162,8 +177,10 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 	 */
+ 	persist_dir = hfs_mkdir("persist", 1,
+ 				hfs_mkdir("sensors", 1,
+-					hfs_mkdir("registry", 1,
+-						hfs_map("registry", sns_reg)
++					hfs_mkdir("registry", 3,
++						hfs_map("registry", sns_reg),
++						hfs_map("sns_reg_version", sns_reg_version),
++						hfs_map("temp.json", sns_reg_temp_json)
+ 					)
+ 				)
+ 		      );
+diff --git a/hexagonrpcd/sns_registry.c b/hexagonrpcd/sns_registry.c
+new file mode 100644
+index 0000000..f01351b
+--- /dev/null
++++ b/hexagonrpcd/sns_registry.c
+@@ -0,0 +1,121 @@
++/*
++ * sns_registry reverse interface (DSP -> apps)
++ *
++ * The Pixel 4a (sunfish) SLPI sensor firmware opens an apps-side "sns_registry"
++ * local interface via apps_remotectl while bringing up its sensor registry.
++ * When the interface is absent the CHRE sensor_process asserts (sar.cc:27) and
++ * the whole ADSP crash-loops.
++ *
++ * SNS_REG is documented (for the older MSM8996 SSC) as a QMI service where the
++ * SSC requests platform sensor data "in groups of keys" and the AP responds
++ * (see gitlab.com/lucaweiss/sns-reg). The newer SLPI here uses the same concept
++ * over a FastRPC reverse interface instead of QMI; there is no public reference
++ * for the FastRPC variant, so the method ABIs are being reverse-engineered from
++ * the firmware's live invocations. This handler logs each call's input buffers
++ * and returns a benign zeroed response so we can learn the protocol.
++ *
++ * Copyright (C) 2026 The Sensor Shell Contributors
++ *
++ * This file is part of sensh.
++ *
++ * Sensh is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include <ctype.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <libhexagonrpc/interface.h>
++
++#include "listener.h"
++#include "sns_registry.h"
++
++static void log_buf(const char *tag, const struct fastrpc_io_buffer *b)
++{
++	const unsigned char *p = b->p;
++	uint32_t i;
++
++	fprintf(stderr, "  %s s=%u hex=", tag, b->s);
++	for (i = 0; i < b->s && i < 48; i++)
++		fprintf(stderr, "%02x", p[i]);
++	fprintf(stderr, " str='");
++	for (i = 0; i < b->s && i < 48; i++)
++		fputc(isprint(p[i]) ? p[i] : '.', stderr);
++	fprintf(stderr, "'\n");
++}
++
++/*
++ * Method 0, observed sc = 0x00020100 (INBUFS=2, OUTBUFS=1). The primary input
++ * buffer is 8 bytes (2 words), so in_nums + in_bufs + out_bufs = 2. With one
++ * input buffer (the requested key-group) and one output buffer (the returned
++ * data) this is a read shape, mirroring apps_std_fread's (1,0,2,1) layout:
++ * in_nums=0, in_bufs=1, out_nums=0, out_bufs=1. The primary input then carries
++ * [in_buf_size][out_buf_size]. Logs the request and returns a zeroed output so
++ * we can see how the firmware reacts and what it asks for next.
++ */
++static const struct fastrpc_function_def_interp2 sns_registry_m0_def = {
++	.msg_id = 0,
++	.in_nums = 0,
++	.in_bufs = 1,
++	.out_nums = 0,
++	.out_bufs = 1,
++};
++
++static uint32_t sns_registry_m0(void *data,
++				const struct fastrpc_io_buffer *inbufs,
++				struct fastrpc_io_buffer *outbufs)
++{
++	fprintf(stderr, "sns_registry method 0:\n");
++	log_buf("in[0]", &inbufs[0]);
++	log_buf("in[1]", &inbufs[1]);
++
++	if (outbufs != NULL && outbufs[0].p != NULL) {
++		fprintf(stderr, "  out[0] cap=%u\n", outbufs[0].s);
++		memset(outbufs[0].p, 0, outbufs[0].s);
++	}
++
++	return 0;
++}
++
++static const struct fastrpc_function_impl sns_registry_procs[] = {
++	{ .def = &sns_registry_m0_def, .impl = sns_registry_m0, },
++};
++
++static const struct fastrpc_interface sns_registry_template = {
++	.name = "sns_registry",
++	.data = NULL,
++	.n_procs = 1,
++	.procs = sns_registry_procs,
++};
++
++struct fastrpc_interface *fastrpc_sns_registry_init(void)
++{
++	struct fastrpc_interface *iface;
++
++	iface = malloc(sizeof(struct fastrpc_interface));
++	if (iface == NULL)
++		return NULL;
++
++	memcpy(iface, &sns_registry_template, sizeof(struct fastrpc_interface));
++
++	return iface;
++}
++
++void fastrpc_sns_registry_deinit(struct fastrpc_interface *iface)
++{
++	free(iface);
++}
+diff --git a/hexagonrpcd/sns_registry.h b/hexagonrpcd/sns_registry.h
+new file mode 100644
+index 0000000..2fd4bc3
+--- /dev/null
++++ b/hexagonrpcd/sns_registry.h
+@@ -0,0 +1,30 @@
++/*
++ * sns_registry reverse interface (DSP -> apps) - header
++ *
++ * Copyright (C) 2026 The Sensor Shell Contributors
++ *
++ * This file is part of sensh.
++ *
++ * Sensh is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#ifndef SNS_REGISTRY_H
++#define SNS_REGISTRY_H
++
++#include "listener.h"
++
++struct fastrpc_interface *fastrpc_sns_registry_init(void);
++void fastrpc_sns_registry_deinit(struct fastrpc_interface *iface);
++
++#endif
+diff --git a/tests/test_hexagonfs.c b/tests/test_hexagonfs.c
+index ae9ee7a..3f5282c 100644
+--- a/tests/test_hexagonfs.c
++++ b/tests/test_hexagonfs.c
+@@ -22,7 +22,10 @@
+ #include <fcntl.h>
+ #include <libhexagonrpc/fastrpc.h>
+ #include <stdbool.h>
++#include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
++#include <sys/stat.h>
+ #include <unistd.h>
+ 
+ #include "../hexagonrpcd/hexagonfs.h"
+@@ -83,6 +86,62 @@ static int test_mapped_seq_read(const char *path)
+ 	return 0;
+ }
+ 
++static int test_mapped_write_create(void)
++{
++	struct hexagonfs_fd *fds[HEXAGONFS_MAX_FD] = { 0 };
++	struct hexagonfs_fd dir = {
++		.is_assigned = true,
++		.up = NULL,
++		.ops = &hexagonfs_mapped_ops,
++	};
++	struct hexagonfs_fd *file;
++	char tmpdir[] = "/tmp/hexagonfs-write-XXXXXX";
++	const char expected[] = "registry write\n";
++	char path[sizeof(tmpdir) + sizeof("/created")];
++	char buf[sizeof(expected)];
++	ssize_t written;
++	int ret;
++	int fd;
++
++	if (mkdtemp(tmpdir) == NULL)
++		return 1;
++
++	ret = hexagonfs_mapped_ops.from_dirent(tmpdir, true, &dir.data);
++	if (ret)
++		return 1;
++
++	hexagonfs_leaf_open_flags = O_RDWR | O_CREAT | O_TRUNC;
++	ret = hexagonfs_mapped_ops.openat(&dir, "created", false, &file);
++	hexagonfs_leaf_open_flags = 0;
++	if (ret)
++		return 1;
++
++	fds[0] = file;
++	written = hexagonfs_write(fds, 0, strlen(expected), expected);
++	if (written != strlen(expected))
++		return 1;
++
++	hexagonfs_mapped_ops.close(file->data);
++	free(file);
++	hexagonfs_mapped_ops.close(dir.data);
++
++	snprintf(path, sizeof(path), "%s/created", tmpdir);
++	fd = open(path, O_RDONLY);
++	if (fd == -1)
++		return 1;
++
++	memset(buf, 0, sizeof(buf));
++	ret = read(fd, buf, sizeof(buf));
++	close(fd);
++	unlink(path);
++	rmdir(tmpdir);
++
++	if (ret != strlen(expected))
++		return 1;
++
++	return memcmp(buf, expected, strlen(expected));
++}
++
+ int main(int argc, const char **argv)
+ {
+ 	int ret;
+@@ -94,5 +153,9 @@ int main(int argc, const char **argv)
+ 	if (ret)
+ 		return ret;
+ 
++	ret = test_mapped_write_create();
++	if (ret)
++		return ret;
++
+ 	return 0;
+ }
+-- 
+2.55.0
+

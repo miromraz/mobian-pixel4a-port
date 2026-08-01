@@ -354,8 +354,19 @@ ln -sf /etc/systemd/system/venus-rpmhpd-sync.service \
 # SEE/CHRE sensor firmware brings up (replaces the old stop-adsp-ssr workaround, now that the
 # sar.cc:27 SSR loop is fixed at the source via the smp2p sleepstate dtb entry added below).
 if [ -d hexagonrpc ]; then
-  install -Dm755 hexagonrpc/bin/hexagonrpcd rmnt/usr/bin/hexagonrpcd
-  install -Dm644 hexagonrpc/lib/libhexagonrpc.so.0.4 rmnt/usr/lib/aarch64-linux-gnu/libhexagonrpc.so.0.4
+  # Build hexagonrpcd yourself: github.com/linux-msm/hexagonrpc with the patch
+  # series in docs/hexagonrpc-series/ applied, then drop the binary + library at
+  # these paths (overridable). They are not committed -- built, stale in weeks.
+  HEXRPCD=${HEXRPCD:-hexagonrpc/bin/hexagonrpcd}
+  HEXRPCLIB=${HEXRPCLIB:-hexagonrpc/lib/libhexagonrpc.so.0.4}
+  for f in "$HEXRPCD" "$HEXRPCLIB"; do
+    [ -e "$f" ] || { echo "FATAL: missing $f" >&2
+      echo "       build hexagonrpcd from https://github.com/linux-msm/hexagonrpc with the" >&2
+      echo "       patches in docs/hexagonrpc-series/ applied, then place the binary at" >&2
+      echo "       HEXRPCD and the library at HEXRPCLIB" >&2; exit 1; }
+  done
+  install -Dm755 "$HEXRPCD" rmnt/usr/bin/hexagonrpcd
+  install -Dm644 "$HEXRPCLIB" rmnt/usr/lib/aarch64-linux-gnu/libhexagonrpc.so.0.4
   # NOTE: sensors/config/s5_lsm6dsr.json deliberately DIFFERS from the stock capture.
   # Its .orient block is x=+y y=-x z=+z, i.e. stock's -y/+x/+z plus 180 deg about Z.
   # Without that half-turn iio-sensor-proxy reports "bottom-up" while the phone is
@@ -598,9 +609,19 @@ cp newinitrd emnt/initrd.img
 # speaker audio (see kernel branch sunfish-audio-tdm). The dtb is built from source
 # (already carries sleepstate + gpio-reserved-ranges); the fdtput blocks below remain
 # as idempotent no-ops / BT-address refresh.
-if [ -d kernel ]; then
-  cp kernel/vmlinuz.efi emnt/vmlinuz.efi
-  cp kernel/sm7150-google-sunfish.dtb emnt/sm7150-google-sunfish.dtb
+# Kernel image + dtb come from the build tree, not the repo (built, not committed).
+# The zboot vmlinuz.efi is REQUIRED -- an uncompressed Image will NOT boot here.
+# Overridable so a MODTREE build box (where KSRC may not exist) can point elsewhere.
+KIMG=${KIMG:-$KSRC/arch/arm64/boot/vmlinuz.efi}
+KDTB=${KDTB:-$KSRC/arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dtb}
+if [ -e "$KIMG" ] && [ -e "$KDTB" ]; then
+  cp "$KIMG" emnt/vmlinuz.efi
+  cp "$KDTB" emnt/sm7150-google-sunfish.dtb
+else
+  echo "FATAL: kernel image/dtb not found (KIMG=$KIMG KDTB=$KDTB)" >&2
+  echo "       build the kernel (branch sunfish-venus-v7.2) and point KIMG at the zboot" >&2
+  echo "       vmlinuz.efi and KDTB at sm7150-google-sunfish.dtb" >&2
+  exit 1
 fi
 # Fast-boot console: strip serial consoles from the base entry. Routing the verbose kernel
 # log out ttyMSM0/ttyGS0 @115200 synchronously (amplified by the sar.cc ADSP SSR spam)

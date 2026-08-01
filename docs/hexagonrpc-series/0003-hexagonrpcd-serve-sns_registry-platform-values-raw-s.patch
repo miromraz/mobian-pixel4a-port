@@ -1,0 +1,124 @@
+From 3291f5025c24b0c5bf0c7739fba468011b9f9b81 Mon Sep 17 00:00:00 2001
+From: miromraz <mraz.miro@seznam.cz>
+Date: Sun, 31 May 2026 12:53:49 +0200
+Subject: [PATCH 3/3] hexagonrpcd: serve sns_registry platform values (raw
+ sysfs format)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Pixel 4a SLPI firmware reads platform/SoC identity through the
+sns_registry reverse interface (method 0, "read item by name") before
+sensor bring-up: hw_platform, soc_id, g_platform_version, etc. The
+response format is the raw value the downstream daemon would read from
+/sys/devices/soc0/<name> (NOT JSON) — confirmed empirically: a raw
+"hw_platform" value makes the firmware advance to the next item, while
+JSON/zeroed responses are rejected and retried until SSR.
+
+Serve each requested item from /sys/devices/soc0/<name> (mainline
+socinfo provides soc_id=365, revision, machine, family) with defaults
+for the Qualcomm-only fields mainline doesn't expose (hw_platform=MTP,
+others=0; the sensor configs accept OEM/MTP/IDP).
+
+With this the firmware drives the full registry with NO unsupported
+methods and no daemon errors: it reads all registry JSON blobs and
+configs, writes its rebuilt registry, and fetches platform values.
+The sensor-registry/FastRPC layer is now complete.
+
+Remaining (out of scope of the registry): the ADSP still SSRs every
+~10s at sensor_process sar.cc:27 (chre_utils fatal). With the registry
+fully served and error-free, this is a firmware-internal sensor
+bring-up assert on the SSC private bus, not something the AP-side
+registry service can satisfy.
+---
+ hexagonrpcd/sns_registry.c | 56 ++++++++++++++++++++++++++++++++++----
+ 1 file changed, 51 insertions(+), 5 deletions(-)
+
+diff --git a/hexagonrpcd/sns_registry.c b/hexagonrpcd/sns_registry.c
+index f01351b..0806a66 100644
+--- a/hexagonrpcd/sns_registry.c
++++ b/hexagonrpcd/sns_registry.c
+@@ -33,11 +33,13 @@
+  */
+ 
+ #include <ctype.h>
++#include <fcntl.h>
+ #include <stddef.h>
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <unistd.h>
+ 
+ #include <libhexagonrpc/interface.h>
+ 
+@@ -75,17 +77,61 @@ static const struct fastrpc_function_def_interp2 sns_registry_m0_def = {
+ 	.out_bufs = 1,
+ };
+ 
++/*
++ * Read a platform/SoC identity value the way the downstream sensors daemon
++ * would: from /sys/devices/soc0/<name>. Mainline socinfo exposes soc_id,
++ * revision, machine, family; the Qualcomm-only ones (hw_platform,
++ * platform_subtype*, platform_version, g_*) are absent, so fall back to
++ * defaults that satisfy the sensor configs (which accept "OEM"/"MTP"/"IDP").
++ * Returns the trimmed length written to out.
++ */
++static int sns_registry_value(const char *name, char *out, size_t outsz)
++{
++	char path[256];
++	int fd;
++	ssize_t r = -1;
++
++	snprintf(path, sizeof(path), "/sys/devices/soc0/%s", name);
++	fd = open(path, O_RDONLY);
++	if (fd >= 0) {
++		r = read(fd, out, outsz - 1);
++		close(fd);
++	}
++
++	if (r <= 0) {
++		const char *def = "0";
++
++		if (!strcmp(name, "hw_platform") || !strcmp(name, "g_hw_platform"))
++			def = "MTP";
++		r = snprintf(out, outsz, "%s", def);
++	} else {
++		out[r] = '\0';
++		while (r > 0 && (out[r - 1] == '\n' || out[r - 1] == '\r'))
++			out[--r] = '\0';
++	}
++
++	return (int) r;
++}
++
+ static uint32_t sns_registry_m0(void *data,
+ 				const struct fastrpc_io_buffer *inbufs,
+ 				struct fastrpc_io_buffer *outbufs)
+ {
+-	fprintf(stderr, "sns_registry method 0:\n");
+-	log_buf("in[0]", &inbufs[0]);
+-	log_buf("in[1]", &inbufs[1]);
++	const char *group = inbufs[1].p;
++	char val[256];
++	int n;
++	size_t cap, len;
++
++	n = sns_registry_value(group, val, sizeof(val));
++
++	fprintf(stderr, "sns_registry m0: group='%s' out_cap=%u -> '%s'\n",
++			group, (outbufs ? outbufs[0].s : 0), val);
+ 
+ 	if (outbufs != NULL && outbufs[0].p != NULL) {
+-		fprintf(stderr, "  out[0] cap=%u\n", outbufs[0].s);
+-		memset(outbufs[0].p, 0, outbufs[0].s);
++		cap = outbufs[0].s;
++		len = ((size_t) n + 1 < cap) ? (size_t) n + 1 : cap;	/* include NUL */
++		memset(outbufs[0].p, 0, cap);
++		memcpy(outbufs[0].p, val, len);
+ 	}
+ 
+ 	return 0;
+-- 
+2.55.0
+

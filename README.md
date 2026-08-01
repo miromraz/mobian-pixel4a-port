@@ -4,13 +4,30 @@ Debian 13 "trixie" + **Plasma Mobile/Desktop** running on a **mainline Linux ker
 on the Pixel 4a, with drivers reverse-engineered for this device.
 
 **What it feels like today:** a small Linux computer that boots reliably, has working
-display, WiFi, Bluetooth, sound, and sensors. **It is not yet a usable phone** — there
-is no mobile data and no camera, and battery life is mediocre. Treat it as a
+display, WiFi, Bluetooth, sound, sensors and cameras. **It is not yet a usable phone** —
+there is no mobile data and battery life is mediocre. Treat it as a
 second device, not your daily driver.
 
 > ⚠️ **This will erase your phone**, requires an unlocked bootloader, and is not
 > supported by Google or Debian. You are expected to be comfortable with `fastboot`
 > and recovering a device that won't boot. Nothing here is guaranteed.
+
+---
+
+## Kernel source
+
+The mainline kernel is the whole point of this project. It lives in a separate tree —
+this repo carries only the userspace, recipe and device fixes, not the built kernel.
+
+- Tree: **[github.com/miromraz/linux](https://github.com/miromraz/linux)**
+- Branch **`sunfish-venus-v7.2`** — 74 commits on top of `sm7150-mainline/linux`
+  `v7.2`. **This is the branch that matches this repo**; build it for the image below.
+- Branch **`sunfish-fuel-gauge-v7.2`** — 3 further commits (PM6150 fuel gauge, charger,
+  charge-status), submitted upstream as
+  [sm7150-mainline/linux#58](https://github.com/sm7150-mainline/linux/pull/58).
+
+> ⚠️ The repo's **default branch is `v7.1`, which is NOT this port.** Check out
+> `sunfish-venus-v7.2` explicitly.
 
 ---
 
@@ -26,7 +43,10 @@ second device, not your daily driver.
 | Sensors: accelerometer, light, proximity (auto-rotate) | ✅ |
 | Battery, charging, USB-C | ✅ |
 | Haptics, torch | ✅ |
-| Hardware video **decode** (H.264/VP8/VP9/HEVC) | ✅ |
+| Front camera (IMX355, 8 MP stills) | ✅ cold boot, non-root |
+| Rear camera (IMX363, 12 MP stills) | ✅ camss is RDI-only so debayering is on the CPU; preview uses a 2×2-binned 2016×1512 mode, shutter lag ~1.5 s |
+| NFC (ST54J via `nxp-nci`), incl. MIFARE Classic tag reading | ✅ needs `neard`; no card emulation / HCE |
+| Hardware video **decode** (H.264/VP8/VP9/HEVC) | ✅ MPEG-2 is masked |
 | Suspend / resume | ✅ works, but it's a shallow sleep — see below |
 
 ## What doesn't
@@ -34,7 +54,6 @@ second device, not your daily driver.
 | | |
 |-|-|
 | **Mobile data / calls / SMS** | ❌ SIM is read and the control plane comes up, but the radio never goes online. Known to be a software problem — the same hardware registers fine under LineageOS. |
-| **Camera** | ❌ nothing at all; the camera subsystem driver doesn't attach. |
 | **GPS** | ❌ not started. |
 | Deep sleep / good battery life | ⚠️ suspend works but only saves ~20% versus idling awake, because the SoC never reaches its real low-power states. Under active investigation. |
 | Video **encode** | ❌ needs CVP support. |
@@ -96,16 +115,32 @@ remaining non-source inputs `patch.sh` expects (`qbootctl` and its musl loader f
 postmarketOS rootfs, the ath10k files, and an optional `ssh-authorized-keys` for
 headless bringup).
 
-### Step 2 — Build the image
+### Step 2 — Build the kernel
+
+Like the vendor firmware, the built kernel is **not** committed here — it's stale
+within a couple of weeks. Build it yourself and populate the overlay.
+
+Check out **`sunfish-venus-v7.2`** (see [Kernel source](#kernel-source) above) and build
+it with `ARCH=arm64` and an aarch64 cross toolchain, then drop the outputs into
+`recipe/devices/sm7150/overlay-google-sunfish/`:
+
+```
+boot/vmlinuz-$KVER
+usr/lib/modules/$KVER/                                     # from make modules_install
+usr/lib/linux-image-$KVER/qcom/sm7150-google-sunfish.dtb
+```
+
+The debos `overlay` action in `recipe/devices/sm7150/packages-base.yaml` injects these
+raw artifacts into the rootfs, and `install-kernel.sh` then runs `depmod` and builds the
+initramfs for them. (`kernel-config-*.txt` is the exact config used.)
+
+### Step 3 — Build the image
 
 The rootfs is built with the **debos** recipe in `recipe/`, then `work/patch.sh`
 injects the mainline kernel, initramfs hooks and device fixes and repacks everything
 into a sparse `userdata-nested.simg`.
 
-The kernel comes from the [`sm7150-mainline`](https://github.com/sm7150-mainline/linux)
-fork plus this port's patches; `kernel-config-*.txt` is the exact config used.
-
-### Step 3 — Flash
+### Step 4 — Flash
 
 The stock bootloader **cannot** boot a mainline kernel directly, so the chain is
 `ABL → U-Boot → systemd-boot → kernel`. U-Boot goes on the `boot` partition, in **both**

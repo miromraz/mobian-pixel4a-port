@@ -1,0 +1,101 @@
+From cd9bc205ecc23d5161fc6d218522ba2a10f84649 Mon Sep 17 00:00:00 2001
+From: miromraz <mraz.miro@seznam.cz>
+Date: Sun, 31 May 2026 12:36:16 +0200
+Subject: [PATCH 2/3] hexagonrpcd: fix heap overflow in apps_std_stat in-place
+ path
+
+apps_std_stat wrote its full 96-byte result struct directly into the
+output buffer, but the in-place stat variant (handle 1, method 31,
+INBUFS=3/OUTBUFS=0) reuses the caller-provided inbufs[2], which the
+firmware sizes itself and can be smaller (observed: 61 bytes on Pixel
+4a). That overran the heap and corrupted the allocator, aborting the
+daemon ("malloc(): unaligned tcache chunk") a few operations later and
+dropping the sensor-registry service, which restarted the ADSP crash
+loop.
+
+Build the result in a local struct and copy at most the destination
+size. The normal path (96-byte output buffer) is unchanged; the
+in-place path no longer overruns.
+
+Found with AddressSanitizer (native aarch64 build on the device):
+heap-buffer-overflow WRITE at apps_std.c:377, 0 bytes after a 61-byte
+region allocated by the inbuf decoder.
+---
+ hexagonrpcd/apps_std.c | 45 +++++++++++++++++++++++++++---------------
+ 1 file changed, 29 insertions(+), 16 deletions(-)
+
+diff --git a/hexagonrpcd/apps_std.c b/hexagonrpcd/apps_std.c
+index 42ed3e9..528aeed 100644
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -323,7 +323,7 @@ static uint32_t apps_std_stat(void *data,
+ 			      struct fastrpc_io_buffer *outbufs)
+ {
+ 	struct apps_std_ctx *ctx = data;
+-	struct {
++	struct stat_out {
+ 		uint64_t tsz; // Unknown purpose
+ 		uint64_t dev;
+ 		uint64_t ino;
+@@ -337,9 +337,11 @@ static uint32_t apps_std_stat(void *data,
+ 		int64_t mtimensec;
+ 		int64_t ctime;
+ 		int64_t ctimensec;
+-	} *first_out = outbufs ? outbufs[0].p : inbufs[2].p;
++	} stbuf;
+ 	const char *pathname = inbufs[1].p;
+ 	struct stat stats;
++	void *dst;
++	size_t dst_size;
+ 	int fd, ret;
+ 
+ 	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
+@@ -365,20 +367,31 @@ static uint32_t apps_std_stat(void *data,
+ 	printf("stat(%s)\n", pathname);
+ #endif
+ 
+-	first_out->tsz = 0;
+-
+-	first_out->dev = stats.st_dev;
+-	first_out->ino = stats.st_ino;
+-	first_out->mode = stats.st_mode;
+-	first_out->nlink = stats.st_nlink;
+-	first_out->rdev = stats.st_rdev;
+-	first_out->size = stats.st_size;
+-	first_out->atime = (int64_t) stats.st_atim.tv_sec;
+-	first_out->atimensec = (int64_t) stats.st_atim.tv_nsec;
+-	first_out->mtime = (int64_t) stats.st_mtim.tv_sec;
+-	first_out->mtimensec = (int64_t) stats.st_mtim.tv_nsec;
+-	first_out->ctime = (int64_t) stats.st_ctim.tv_nsec;
+-	first_out->ctimensec = (int64_t) stats.st_ctim.tv_nsec;
++	stbuf.tsz = 0;
++
++	stbuf.dev = stats.st_dev;
++	stbuf.ino = stats.st_ino;
++	stbuf.mode = stats.st_mode;
++	stbuf.nlink = stats.st_nlink;
++	stbuf.rdev = stats.st_rdev;
++	stbuf.size = stats.st_size;
++	stbuf.atime = (int64_t) stats.st_atim.tv_sec;
++	stbuf.atimensec = (int64_t) stats.st_atim.tv_nsec;
++	stbuf.mtime = (int64_t) stats.st_mtim.tv_sec;
++	stbuf.mtimensec = (int64_t) stats.st_mtim.tv_nsec;
++	stbuf.ctime = (int64_t) stats.st_ctim.tv_nsec;
++	stbuf.ctimensec = (int64_t) stats.st_ctim.tv_nsec;
++
++	/*
++	 * The normal path provides a 96-byte output buffer; the in-place
++	 * variant (handle 1, method 31, INBUFS=3/OUTBUFS=0) reuses the
++	 * caller-provided inbufs[2], which the firmware sizes itself and can be
++	 * smaller than the full struct. Never write past whichever buffer we
++	 * were given.
++	 */
++	dst = outbufs ? outbufs[0].p : inbufs[2].p;
++	dst_size = outbufs ? outbufs[0].s : inbufs[2].s;
++	memcpy(dst, &stbuf, dst_size < sizeof(stbuf) ? dst_size : sizeof(stbuf));
+ 
+ 	return 0;
+ }
+-- 
+2.55.0
+
