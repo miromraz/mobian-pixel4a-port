@@ -134,11 +134,48 @@ The debos `overlay` action in `recipe/devices/sm7150/packages-base.yaml` injects
 raw artifacts into the rootfs, and `install-kernel.sh` then runs `depmod` and builds the
 initramfs for them. (`kernel-config-*.txt` is the exact config used.)
 
+### Step 2b — Build hexagonrpcd
+
+Also not committed, and required: without it **no sensor comes up**. It serves the ADSP
+root-PD and sensors-PD FastRPC endpoints that the SEE/CHRE sensor firmware needs.
+
+Build [github.com/linux-msm/hexagonrpc](https://github.com/linux-msm/hexagonrpc) with the
+three patches in [`docs/hexagonrpc-series/`](docs/hexagonrpc-series/) applied (they sit on
+top of upstream `23a6964`), then place `hexagonrpcd` and `libhexagonrpc.so.0.4` where
+`patch.sh` expects them — see `HEXRPCD` / `HEXRPCLIB` below.
+
 ### Step 3 — Build the image
 
 The rootfs is built with the **debos** recipe in `recipe/`, then `work/patch.sh`
 injects the mainline kernel, initramfs hooks and device fixes and repacks everything
 into a sparse `userdata-nested.simg`.
+
+`patch.sh` needs root — it loop-mounts the nested GPT — and takes every path from the
+environment, so it also runs on a build box with no kernel checkout:
+
+|var|what|default|
+|-|-|-|
+|`WORK`|dir holding `userdata-nested.simg` and the binary inputs|the author's laptop path — **set this**|
+|`KSRC`|kernel build tree; supplies the modules, `KIMG` and `KDTB`|`…/kernel/linux-fork`|
+|`MODTREE`|a pre-installed `lib/modules/$KVER` tree, used *instead of* `KSRC` (35 MB stripped vs an 11 GB build tree)|unset|
+|`KIMG`|zboot `vmlinuz.efi`. An uncompressed `Image` will **not** boot here|`$KSRC/arch/arm64/boot/vmlinuz.efi`|
+|`KDTB`|`sm7150-google-sunfish.dtb`|`$KSRC/arch/arm64/boot/dts/qcom/`|
+|`HEXRPCD` / `HEXRPCLIB`|hexagonrpcd binary and `libhexagonrpc.so.0.4` from Step 2b|`work/hexagonrpc/{bin,lib}/`|
+
+Produce a `MODTREE` with
+`make modules_install INSTALL_MOD_PATH=<dir> INSTALL_MOD_STRIP=1`. A typical off-laptop run:
+
+```sh
+sudo WORK=/mnt/sunfish-image MODTREE=/mnt/sunfish-image/modstage \
+     KIMG=/mnt/sunfish-image/kernel/vmlinuz.efi \
+     KDTB=/mnt/sunfish-image/kernel/sm7150-google-sunfish.dtb \
+     sh work/patch.sh
+```
+
+`patch.sh` validates all of these before it does any work, so a missing input fails in
+milliseconds rather than after the whole chroot. It also asserts that `KSRC`/`MODTREE`
+really carries `KVER`: a module built from a different kernel loads as "invalid module
+format" and that subsystem then silently never comes up.
 
 ### Step 4 — Flash
 

@@ -27,6 +27,34 @@ else
   fi
 fi
 
+# Preflight the other build inputs that are NOT committed here (README, "Step 3 — Build the
+# image"): the kernel zboot image + dtb, and the hexagonrpcd binary + library. These used to
+# be checked where they are consumed -- hexagonrpcd ~400 lines down, the kernel ~660 lines
+# down, i.e. AFTER the entire chroot -- so a builder missing one burned the whole build
+# before being told. Resolve and validate them up front; the consumers below just use them.
+KIMG=${KIMG:-$KSRC/arch/arm64/boot/vmlinuz.efi}
+KDTB=${KDTB:-$KSRC/arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dtb}
+HEXRPCD=${HEXRPCD:-hexagonrpc/bin/hexagonrpcd}
+HEXRPCLIB=${HEXRPCLIB:-hexagonrpc/lib/libhexagonrpc.so.0.4}
+# hexagonrpc/ itself is tracked (sensor configs + units); the binaries inside it are not.
+# Checked explicitly because the block that consumes it is gated on the directory, and a
+# silent skip there costs you every sensor with no error anywhere.
+missing=
+[ -d hexagonrpc ] || missing="$missing\n  hexagonrpc/ (sensor configs + units, tracked in git)"
+for v in KIMG KDTB HEXRPCD HEXRPCLIB; do
+  eval "f=\$$v"
+  [ -e "$f" ] || missing="$missing\n  $v=$f"
+done
+if [ -n "$missing" ]; then
+  printf 'FATAL: build inputs missing (you build these yourself, they are not committed):%b\n' \
+    "$missing" >&2
+  echo "  KIMG / KDTB       kernel branch sunfish-venus-v7.2. KIMG must be the zboot" >&2
+  echo "                    vmlinuz.efi -- an uncompressed Image will NOT boot here." >&2
+  echo "  HEXRPCD/HEXRPCLIB github.com/linux-msm/hexagonrpc with docs/hexagonrpc-series/" >&2
+  echo "                    applied. Without them no sensor ever comes up." >&2
+  exit 1
+fi
+
 simg2img userdata-nested.simg nested.img
 LOOP=$(losetup --sector-size 4096 -P --show -f nested.img)
 echo "loop=$LOOP"
@@ -368,17 +396,7 @@ ln -sf /etc/systemd/system/venus-rpmhpd-sync.service \
 # SEE/CHRE sensor firmware brings up (replaces the old stop-adsp-ssr workaround, now that the
 # sar.cc:27 SSR loop is fixed at the source via the smp2p sleepstate dtb entry added below).
 if [ -d hexagonrpc ]; then
-  # Build hexagonrpcd yourself: github.com/linux-msm/hexagonrpc with the patch
-  # series in docs/hexagonrpc-series/ applied, then drop the binary + library at
-  # these paths (overridable). They are not committed -- built, stale in weeks.
-  HEXRPCD=${HEXRPCD:-hexagonrpc/bin/hexagonrpcd}
-  HEXRPCLIB=${HEXRPCLIB:-hexagonrpc/lib/libhexagonrpc.so.0.4}
-  for f in "$HEXRPCD" "$HEXRPCLIB"; do
-    [ -e "$f" ] || { echo "FATAL: missing $f" >&2
-      echo "       build hexagonrpcd from https://github.com/linux-msm/hexagonrpc with the" >&2
-      echo "       patches in docs/hexagonrpc-series/ applied, then place the binary at" >&2
-      echo "       HEXRPCD and the library at HEXRPCLIB" >&2; exit 1; }
-  done
+  # HEXRPCD / HEXRPCLIB resolved and validated by the preflight at the top of this script.
   install -Dm755 "$HEXRPCD" rmnt/usr/bin/hexagonrpcd
   install -Dm644 "$HEXRPCLIB" rmnt/usr/lib/aarch64-linux-gnu/libhexagonrpc.so.0.4
   # NOTE: sensors/config/s5_lsm6dsr.json deliberately DIFFERS from the stock capture.
@@ -625,18 +643,9 @@ cp newinitrd emnt/initrd.img
 # as idempotent no-ops / BT-address refresh.
 # Kernel image + dtb come from the build tree, not the repo (built, not committed).
 # The zboot vmlinuz.efi is REQUIRED -- an uncompressed Image will NOT boot here.
-# Overridable so a MODTREE build box (where KSRC may not exist) can point elsewhere.
-KIMG=${KIMG:-$KSRC/arch/arm64/boot/vmlinuz.efi}
-KDTB=${KDTB:-$KSRC/arch/arm64/boot/dts/qcom/sm7150-google-sunfish.dtb}
-if [ -e "$KIMG" ] && [ -e "$KDTB" ]; then
-  cp "$KIMG" emnt/vmlinuz.efi
-  cp "$KDTB" emnt/sm7150-google-sunfish.dtb
-else
-  echo "FATAL: kernel image/dtb not found (KIMG=$KIMG KDTB=$KDTB)" >&2
-  echo "       build the kernel (branch sunfish-venus-v7.2) and point KIMG at the zboot" >&2
-  echo "       vmlinuz.efi and KDTB at sm7150-google-sunfish.dtb" >&2
-  exit 1
-fi
+# KIMG / KDTB resolved and validated by the preflight at the top of this script.
+cp "$KIMG" emnt/vmlinuz.efi
+cp "$KDTB" emnt/sm7150-google-sunfish.dtb
 # Fast-boot console: strip serial consoles from the base entry. Routing the verbose kernel
 # log out ttyMSM0/ttyGS0 @115200 synchronously (amplified by the sar.cc ADSP SSR spam)
 # throttled boot to ~8 min. Keep only the framebuffer console.

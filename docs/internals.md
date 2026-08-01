@@ -126,7 +126,16 @@ kernel-config-*.txt     # the mainline kernel .config used for the build
 ```
 
 ### Binary build inputs (not in repo — gitignored)
-`patch.sh` expects these next to it in `work/`; they are device/distro blobs, not source:
+`patch.sh` expects these next to it in `work/`; they are device/distro blobs or build
+outputs, not source. The first two are overridable by environment variable and are
+documented with the rest of the build knobs in the README ("Step 3 — Build the image");
+`patch.sh` preflights all of them before doing any work.
+- the **kernel** `vmlinuz.efi` (zboot — an uncompressed `Image` will not boot) and
+  `sm7150-google-sunfish.dtb`, from branch `sunfish-venus-v7.2`. Overridable as
+  `KIMG` / `KDTB`; both default to inside `KSRC`.
+- **`hexagonrpcd`** + `libhexagonrpc.so.0.4`, built from `linux-msm/hexagonrpc` with
+  `docs/hexagonrpc-series/` applied. Overridable as `HEXRPCD` / `HEXRPCLIB`, defaulting to
+  `work/hexagonrpc/bin/` and `work/hexagonrpc/lib/`. Missing these costs you every sensor.
 - `qbootctl` + `ld-musl-aarch64.so.1` — the pmOS aarch64 (musl) `qbootctl` and its
   loader, bundled into the rootfs for the A/B `mark-boot-successful` oneshot. musl's
   loader path doesn't collide with Debian's glibc, so the binary runs unmodified.
