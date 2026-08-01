@@ -45,7 +45,7 @@ this repo carries only the userspace, recipe and device fixes, not the built ker
 | Haptics, torch | ✅ |
 | Front camera (IMX355, 8 MP stills) | ✅ cold boot, non-root |
 | Rear camera (IMX363, 12 MP stills) | ✅ camss is RDI-only so debayering is on the CPU; preview uses a 2×2-binned 2016×1512 mode, shutter lag ~1.5 s |
-| NFC (ST54J via `nxp-nci`), incl. MIFARE Classic tag reading | ✅ needs `neard`; no card emulation / HCE |
+| NFC (ST54J via `nxp-nci`), incl. MIFARE Classic tag reading | ✅ no card emulation / HCE. Needs `neard` — but ⚠️ `apt install neard` **removes `wpasupplicant`**, i.e. it will take your WiFi with it. Install it deliberately, and reinstall `wpasupplicant` afterwards. `neard` also never polls until a D-Bus client asks it to. |
 | Hardware video **decode** (H.264/VP8/VP9/HEVC) | ✅ MPEG-2 is masked |
 | Suspend / resume | ✅ works, but it's a shallow sleep — see below |
 
