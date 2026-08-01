@@ -26,8 +26,8 @@ this repo carries only the userspace, recipe and device fixes, not the built ker
   charge-status), submitted upstream as
   [sm7150-mainline/linux#58](https://github.com/sm7150-mainline/linux/pull/58).
 
-> ⚠️ The repo's **default branch is `v7.1`, which is NOT this port.** Check out
-> `sunfish-venus-v7.2` explicitly.
+`sunfish-venus-v7.2` is that tree's default branch, so a plain `git clone` lands on it.
+The other ~90 branches there are older topic branches and upstream snapshots — ignore them.
 
 ---
 
