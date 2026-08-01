@@ -5,7 +5,7 @@
 # dtb and initrd on it and installs the whole module tree, then applies the device
 # tweaks + Plasma config on top.
 set -e
-cd /home/realni/pixel-a4-linux/mobian/work
+cd "${WORK:-/home/realni/pixel-a4-linux/mobian/work}"
 OVERLAY=/home/realni/pixel-a4-linux/mobian/mobian-recipes/devices/sm7150/overlay-google-sunfish
 ROOTFS_TAR=/home/realni/pixel-a4-linux/mobian/mobian-recipes/rootfs-arm64-plasma-nonfree.tar.gz
 
@@ -13,6 +13,13 @@ echo "=== expand template ==="
 simg2img userdata-nested.simg nested.img
 LOOP=$(losetup --sector-size 4096 -P --show -f nested.img)
 echo "loop=$LOOP"
+# See patch.sh: -P scans the partitions but udev makes the nodes, and a container has no
+# udev; stale nodes from an earlier run point at dead minors, so match against sysfs.
+for p in /sys/block/"${LOOP##*/}"/*p[0-9]*; do
+  n="/dev/${p##*/}"; mm=$(tr ':' ' ' < "$p/dev")
+  [ "$(stat -Lc '%Hr %Lr' "$n" 2>/dev/null)" = "$mm" ] && continue
+  rm -f "$n"; mknod "$n" b $mm
+done
 echo "=== nested partition layout ==="
 sgdisk -p "$LOOP" 2>/dev/null || fdisk -l "$LOOP" 2>/dev/null || true
 
