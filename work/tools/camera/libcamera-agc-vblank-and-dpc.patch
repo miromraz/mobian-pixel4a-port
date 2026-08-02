@@ -1,0 +1,576 @@
+diff --git a/include/libcamera/internal/software_isp/debayer_params.h b/include/libcamera/internal/software_isp/debayer_params.h
+index 6772b43..01fa2bc 100644
+--- a/include/libcamera/internal/software_isp/debayer_params.h
++++ b/include/libcamera/internal/software_isp/debayer_params.h
+@@ -25,6 +25,16 @@ struct DebayerParams {
+ 	float gamma = 1.0;
+ 	float contrastExp = 1.0;
+ 	RGB<float> gains = RGB<float>({ 1.0, 1.0, 1.0 });
++
++	/*
++	 * Defective-pixel correction (DPC). When enabled, isolated hot/dead
++	 * pixels are clamped to their same-colour horizontal neighbours before
++	 * demosaic. dpcThreshold is the minimum deviation (in the 8-bit domain
++	 * the CPU debayer works in) from both neighbours required to correct a
++	 * pixel, so ordinary detail is left untouched.
++	 */
++	bool dpcEnable = false;
++	uint32_t dpcThreshold = 48;
+ };
+ 
+ } /* namespace libcamera */
+diff --git a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+index 9457d62..0dde41f 100644
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -617,6 +617,32 @@ public:
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("imx335", CameraSensorHelperImx335)
+ 
++class CameraSensorHelperImx355 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx355()
++	{
++		/* Reasoned: standard Sony 64 at 10bits, not from a datasheet. */
++		blackLevel_ = 4096;
++		/* From the mainline imx355 driver: gain = 1024 / (1024 - code). */
++		gain_ = AnalogueGainLinear{ 0, 1024, -1, 1024 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("imx355", CameraSensorHelperImx355)
++
++class CameraSensorHelperImx363 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx363()
++	{
++		/* Reasoned: standard Sony 64 at 10bits, not from a datasheet. */
++		blackLevel_ = 4096;
++		/* From the mainline imx363 driver: gain = 1024 / (1024 - code). */
++		gain_ = AnalogueGainLinear{ 0, 1024, -1, 1024 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("imx363", CameraSensorHelperImx363)
++
+ class CameraSensorHelperImx415 : public CameraSensorHelper
+ {
+ public:
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index a13a755..d6e3270 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -67,8 +67,10 @@ Agc::Agc()
+ 
+ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
+ {
++	const auto &agcCfg = context.configuration.agc;
+ 	int32_t &exposure = frameContext.sensor.exposure;
+ 	double &again = frameContext.sensor.gain;
++	int32_t &vblank = frameContext.sensor.vblank;
+ 
+ 	double error = kExposureOptimal - exposureMSV;
+ 
+@@ -84,44 +86,77 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
+ 				-kExpMaxStep, kExpMaxStep);
+ 	float factor = 1.0f + step;
+ 
++	/*
++	 * The sensor's exposure ceiling grows one line for every extra VBLANK
++	 * line (the kernel driver widens V4L2_CID_EXPOSURE's range from its
++	 * V4L2_CID_VBLANK handler). exposureMax in the configuration is the
++	 * ceiling at vblankMin, so the effective ceiling at the current frame
++	 * duration is exposureMax + (vblank - vblankMin).
++	 */
++	auto exposureMaxFor = [&](int32_t vb) {
++		return agcCfg.exposureMax + (vb - agcCfg.vblankMin);
++	};
++
+ 	if (factor > 1.0f) {
+-		/* Scene too dark: increase exposure first, then gain. */
+-		if (exposure < context.configuration.agc.exposureMax) {
++		/*
++		 * Scene too dark. Priority of light-gathering levers:
++		 *   1. exposure, up to the current frame-duration ceiling
++		 *   2. frame duration (VBLANK), which widens that ceiling and
++		 *      lets exposure keep growing - cleaner than gain
++		 *   3. analogue gain, as the last resort (adds noise)
++		 */
++		if (exposure < exposureMaxFor(vblank)) {
+ 			int32_t next = static_cast<int32_t>(exposure * factor);
+ 			exposure = std::max(next, exposure + 1);
++		} else if (agcCfg.vblankAvailable && vblank < agcCfg.vblankMax) {
++			int32_t next = static_cast<int32_t>(vblank * factor);
++			vblank = std::clamp(std::max(next, vblank + 1),
++					    agcCfg.vblankMin, agcCfg.vblankMax);
++			/* Let exposure take up the newly available headroom. */
++			exposure = std::max(exposure + 1,
++					    static_cast<int32_t>(exposure * factor));
+ 		} else {
+ 			double next = again * factor;
+-			if (next - again < context.configuration.agc.againMinStep)
+-				again += context.configuration.agc.againMinStep;
++			if (next - again < agcCfg.againMinStep)
++				again += agcCfg.againMinStep;
+ 			else
+ 				again = next;
+ 		}
+ 	} else {
+-		/* Scene too bright: decrease gain first, then exposure. */
+-		if (again > context.configuration.agc.again10) {
++		/*
++		 * Scene too bright. Reverse order: drop gain, then exposure,
++		 * and once exposure fits within the base ceiling again pull
++		 * VBLANK back down to restore the frame rate.
++		 */
++		if (again > agcCfg.again10) {
+ 			double next = again * factor;
+-			if (again - next < context.configuration.agc.againMinStep)
+-				again -= context.configuration.agc.againMinStep;
++			if (again - next < agcCfg.againMinStep)
++				again -= agcCfg.againMinStep;
+ 			else
+ 				again = next;
+-		} else {
++		} else if (exposure > agcCfg.exposureMax || !agcCfg.vblankAvailable ||
++			   vblank <= agcCfg.vblankMin) {
+ 			int32_t next = static_cast<int32_t>(exposure * factor);
+ 			exposure = std::min(next, exposure - 1);
++		} else {
++			int32_t next = static_cast<int32_t>(vblank * factor);
++			vblank = std::clamp(std::min(next, vblank - 1),
++					    agcCfg.vblankMin, agcCfg.vblankMax);
+ 		}
+ 	}
+ 
+-	exposure = std::clamp(exposure, context.configuration.agc.exposureMin,
+-			      context.configuration.agc.exposureMax);
+-	again = std::clamp(again, context.configuration.agc.againMin,
+-			   context.configuration.agc.againMax);
++	exposure = std::clamp(exposure, agcCfg.exposureMin, exposureMaxFor(vblank));
++	again = std::clamp(again, agcCfg.againMin, agcCfg.againMax);
+ 
+ 	context.activeState.agc.exposure = exposure;
+ 	context.activeState.agc.again = again;
++	context.activeState.agc.vblank = vblank;
+ 
+ 	LOG(IPASoftExposure, Debug)
+ 		<< "exposureMSV " << exposureMSV
+ 		<< " error " << error << " factor " << factor
+-		<< " exp " << exposure << " again " << again;
++		<< " exp " << exposure << " again " << again
++		<< " vblank " << vblank;
+ }
+ 
+ void Agc::process(IPAContext &context,
+@@ -142,6 +177,7 @@ void Agc::process(IPAContext &context,
+ 		 */
+ 		context.activeState.agc.exposure = frameContext.sensor.exposure;
+ 		context.activeState.agc.again = frameContext.sensor.gain;
++		context.activeState.agc.vblank = frameContext.sensor.vblank;
+ 		context.activeState.agc.valid = true;
+ 	}
+ 
+@@ -152,6 +188,7 @@ void Agc::process(IPAContext &context,
+ 		 */
+ 		frameContext.sensor.exposure = context.activeState.agc.exposure;
+ 		frameContext.sensor.gain = context.activeState.agc.again;
++		frameContext.sensor.vblank = context.activeState.agc.vblank;
+ 		return;
+ 	}
+ 
+diff --git a/src/ipa/simple/algorithms/dpc.cpp b/src/ipa/simple/algorithms/dpc.cpp
+new file mode 100644
+index 0000000..fa528e4
+--- /dev/null
++++ b/src/ipa/simple/algorithms/dpc.cpp
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Copyright (C) 2026
++ *
++ * Defective-pixel correction
++ *
++ * This algorithm only carries the enable/threshold tuning down to the CPU
++ * debayer via DebayerParams; the actual clamp on the raw Bayer data (before
++ * demosaic, against same-colour neighbours) is done in DebayerCpu.
++ */
++
++#include "dpc.h"
++
++#include <libcamera/base/log.h>
++
++namespace libcamera {
++
++namespace ipa::soft::algorithms {
++
++LOG_DEFINE_CATEGORY(IPASoftDpc)
++
++int Dpc::init([[maybe_unused]] IPAContext &context, const ValueNode &tuningData)
++{
++	auto threshold = tuningData["threshold"].get<uint32_t>();
++	if (threshold.has_value())
++		threshold_ = threshold.value();
++
++	LOG(IPASoftDpc, Debug) << "DPC threshold " << threshold_;
++	return 0;
++}
++
++void Dpc::prepare([[maybe_unused]] IPAContext &context,
++		  [[maybe_unused]] const uint32_t frame,
++		  [[maybe_unused]] IPAFrameContext &frameContext,
++		  DebayerParams *params)
++{
++	params->dpcEnable = true;
++	params->dpcThreshold = threshold_;
++}
++
++REGISTER_IPA_ALGORITHM(Dpc, "Dpc")
++
++} /* namespace ipa::soft::algorithms */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/algorithms/dpc.h b/src/ipa/simple/algorithms/dpc.h
+new file mode 100644
+index 0000000..5be48ab
+--- /dev/null
++++ b/src/ipa/simple/algorithms/dpc.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Copyright (C) 2026
++ *
++ * Defective-pixel correction
++ */
++
++#pragma once
++
++#include <stdint.h>
++
++#include "algorithm.h"
++
++namespace libcamera {
++
++namespace ipa::soft::algorithms {
++
++class Dpc : public Algorithm
++{
++public:
++	Dpc() = default;
++	~Dpc() = default;
++
++	int init(IPAContext &context, const ValueNode &tuningData) override;
++	void prepare(IPAContext &context,
++		     const uint32_t frame,
++		     IPAFrameContext &frameContext,
++		     DebayerParams *params) override;
++
++private:
++	uint32_t threshold_ = 8;
++};
++
++} /* namespace ipa::soft::algorithms */
++
++} /* namespace libcamera */
+diff --git a/src/ipa/simple/algorithms/meson.build b/src/ipa/simple/algorithms/meson.build
+index 73c6372..ee7dbd3 100644
+--- a/src/ipa/simple/algorithms/meson.build
++++ b/src/ipa/simple/algorithms/meson.build
+@@ -6,4 +6,5 @@ soft_simple_ipa_algorithms = files([
+     'agc.cpp',
+     'blc.cpp',
+     'ccm.cpp',
++    'dpc.cpp',
+ ])
+diff --git a/src/ipa/simple/data/uncalibrated.yaml b/src/ipa/simple/data/uncalibrated.yaml
+index fc90ca5..a6f509b 100644
+--- a/src/ipa/simple/data/uncalibrated.yaml
++++ b/src/ipa/simple/data/uncalibrated.yaml
+@@ -16,4 +16,9 @@ algorithms:
+   #                0, 0, 1]
+   - Adjust:
+   - Agc:
++  # Defective-pixel correction: clamps isolated hot/dead pixels on the raw
++  # Bayer data before demosaic. threshold is the minimum deviation (8-bit
++  # domain) from both same-colour horizontal neighbours required to correct.
++  - Dpc:
++      threshold: 8
+ ...
+diff --git a/src/ipa/simple/ipa_context.h b/src/ipa/simple/ipa_context.h
+index 8ccfacb..881e138 100644
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -29,6 +29,14 @@ struct IPASessionConfiguration {
+ 		int32_t exposureMin, exposureMax;
+ 		double againMin, againMax, again10, againMinStep;
+ 		utils::Duration lineDuration;
++		/*
++		 * VBLANK (frame duration) control. vblankMax is capped so the
++		 * frame rate never drops below a floor (see soft_simple.cpp).
++		 * Raising VBLANK by N lines widens the sensor exposure ceiling
++		 * by N lines, so exposureMax above is the ceiling at vblankMin.
++		 */
++		bool vblankAvailable;
++		int32_t vblankMin, vblankMax;
+ 	} agc;
+ 	struct {
+ 		std::optional<uint8_t> level;
+@@ -39,6 +47,7 @@ struct IPAActiveState {
+ 	struct {
+ 		int32_t exposure;
+ 		double again;
++		int32_t vblank;
+ 		bool valid;
+ 	} agc;
+ 
+@@ -69,6 +78,7 @@ struct IPAFrameContext : public FrameContext {
+ 	struct {
+ 		int32_t exposure;
+ 		double gain;
++		int32_t vblank;
+ 	} sensor;
+ 
+ 	RGB<float> gains;
+diff --git a/src/ipa/simple/soft_simple.cpp b/src/ipa/simple/soft_simple.cpp
+index 629e1a3..c0b9616 100644
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -163,6 +163,7 @@ int IPASoftSimple::init(const IPASettings &settings,
+ 		params_->gamma = 1.0 / algorithms::kDefaultGamma;
+ 		params_->contrastExp = 1.0;
+ 		params_->gains = { { 1.0, 1.0, 1.0 } };
++		params_->dpcEnable = false;
+ 		/* combinedMatrix is reset for each frame. */
+ 	}
+ 
+@@ -220,6 +221,34 @@ int IPASoftSimple::configure(const IPAConfigInfo &configInfo)
+ 		context_.configuration.agc.exposureMin = 1;
+ 	}
+ 
++	/*
++	 * If the sensor exposes VBLANK, the AGC can extend the frame duration to
++	 * raise the exposure ceiling once exposure is maxed. Cap VBLANK so the
++	 * frame rate never drops below kMinFrameRate, keeping the preview live.
++	 */
++	static constexpr double kMinFrameRate = 15.0;
++	context_.configuration.agc.vblankAvailable = false;
++	auto vblankIt = sensorInfoMap_.find(V4L2_CID_VBLANK);
++	double lineDurationUs =
++		context_.configuration.agc.lineDuration.get<std::micro>();
++	if (vblankIt != sensorInfoMap_.end() && lineDurationUs > 0) {
++		const ControlInfo &vblankInfo = vblankIt->second;
++		int32_t vblankMin = vblankInfo.min().get<int32_t>();
++		int32_t vblankHwMax = vblankInfo.max().get<int32_t>();
++		/* Frame height in lines = frame length at vblankMin minus vblankMin. */
++		int32_t frameHeight = context_.sensorInfo.minFrameLength - vblankMin;
++		/* Largest frame length (lines) that still meets kMinFrameRate. */
++		double maxFrameLines = (1.0e6 / kMinFrameRate) / lineDurationUs;
++		int32_t vblankFpsMax =
++			static_cast<int32_t>(maxFrameLines) - frameHeight;
++		int32_t vblankMax = std::clamp(vblankFpsMax, vblankMin, vblankHwMax);
++		if (vblankMax > vblankMin) {
++			context_.configuration.agc.vblankAvailable = true;
++			context_.configuration.agc.vblankMin = vblankMin;
++			context_.configuration.agc.vblankMax = vblankMax;
++		}
++	}
++
+ 	int32_t againMin = gainInfo.min().get<int32_t>();
+ 	int32_t againMax = gainInfo.max().get<int32_t>();
+ 	int32_t againDef = gainInfo.def().get<int32_t>();
+@@ -306,6 +335,13 @@ void IPASoftSimple::processStats(const uint32_t frame,
+ 	int32_t again = sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>();
+ 	frameContext.sensor.gain = camHelper_ ? camHelper_->gain(again) : again;
+ 
++	if (context_.configuration.agc.vblankAvailable &&
++	    sensorControls.contains(V4L2_CID_VBLANK))
++		frameContext.sensor.vblank =
++			sensorControls.get(V4L2_CID_VBLANK).get<int32_t>();
++	else
++		frameContext.sensor.vblank = context_.configuration.agc.vblankMin;
++
+ 	ControlList metadata(controls::controls);
+ 	for (const auto &algo : algorithms())
+ 		algo->process(context_, frame, frameContext, stats_, metadata);
+@@ -325,6 +361,13 @@ void IPASoftSimple::processStats(const uint32_t frame,
+ 	ctrls.set(V4L2_CID_ANALOGUE_GAIN,
+ 		  static_cast<int32_t>(camHelper_ ? camHelper_->gainCode(againNew) : againNew));
+ 
++	/*
++	 * Emit VBLANK so the frame duration follows the AGC. Only send it when
++	 * it changed to avoid unnecessary sensor re-programming.
++	 */
++	if (context_.configuration.agc.vblankAvailable)
++		ctrls.set(V4L2_CID_VBLANK, frameContext.sensor.vblank);
++
+ 	setSensorControls.emit(ctrls);
+ }
+ 
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index e26f438..01773e5 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -569,6 +569,12 @@ SimpleCameraData::SimpleCameraData(SimplePipelineHandler *pipe,
+ 	std::unordered_map<uint32_t, DelayedControls::ControlParams> params = {
+ 		{ V4L2_CID_ANALOGUE_GAIN, { delays.gainDelay, false } },
+ 		{ V4L2_CID_EXPOSURE, { delays.exposureDelay, false } },
++		/*
++		 * VBLANK lets the soft IPA extend the frame duration to raise the
++		 * exposure ceiling once exposure is maxed. It must be listed here
++		 * or DelayedControls::push() would reject the whole control set.
++		 */
++		{ V4L2_CID_VBLANK, { delays.vblankDelay, false } },
+ 	};
+ 	delayedCtrls_ = std::make_unique<DelayedControls>(sensor_->device(), params);
+ 
+diff --git a/src/libcamera/sensor/camera_sensor_properties.cpp b/src/libcamera/sensor/camera_sensor_properties.cpp
+index 2804315..e5a8bf8 100644
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -261,6 +261,26 @@ const CameraSensorProperties *CameraSensorProperties::get(const std::string &sen
+ 			.testPatternModes = {},
+ 			.sensorDelays = { },
+ 		} },
++		{ "imx355", {
++			.unitCellSize = { 1120, 1120 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 1,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
++		{ "imx363", {
++			.unitCellSize = { 1400, 1400 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 1,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
+ 		{ "imx415", {
+ 			.unitCellSize = { 1450, 1450 },
+ 			.testPatternModes = {},
+diff --git a/src/libcamera/software_isp/debayer_cpu.cpp b/src/libcamera/software_isp/debayer_cpu.cpp
+index 49382b4..bc46fd8 100644
+--- a/src/libcamera/software_isp/debayer_cpu.cpp
++++ b/src/libcamera/software_isp/debayer_cpu.cpp
+@@ -48,6 +48,7 @@ private:
+ 	void setupInputMemcpy(const uint8_t *linePointers[]);
+ 	void shiftLinePointers(const uint8_t *linePointers[], const uint8_t *src);
+ 	void memcpyNextLine(const uint8_t *linePointers[]);
++	void dpcLine(uint8_t *line);
+ 	void process2(uint32_t frame, const uint8_t *src, uint8_t *dst);
+ 	void process4(uint32_t frame, const uint8_t *src, uint8_t *dst);
+ 
+@@ -688,6 +689,15 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
+ 
+ 	ccmEnabled_ = ccmEnabled;
+ 
++	/*
++	 * DPC operates on the high byte of each pixel, which only maps cleanly
++	 * to one byte per pixel for CSI-2 packed inputs. Restrict it to those.
++	 */
++	BayerFormat inputBayer = BayerFormat::fromPixelFormat(inputCfg.pixelFormat);
++	dpcSupported_ = inputBayer.packing == BayerFormat::Packing::CSI2;
++	dpcEnable_ = false;
++	dpcThreshold_ = 8;
++
+ 	/*
+ 	 * Lookup tables must be initialized because the initial value is used for
+ 	 * the first two frames, i.e. until stats processing starts providing its
+@@ -787,6 +797,43 @@ DebayerCpu::strideAndFrameSize(const PixelFormat &outputFormat, const Size &size
+ 	return std::make_tuple(stride, stride * size.height);
+ }
+ 
++/*
++ * \brief Correct defective (hot/dead) pixels in one raw Bayer line, in place
++ * \param[in] line Pointer to the first visible pixel of the (writable) line
++ *
++ * Each pixel is compared against its two same-colour horizontal neighbours
++ * (2 pixels away, so same Bayer colour). A pixel is clamped to the neighbour
++ * range only when it deviates from both neighbours by more than the tuned
++ * threshold, leaving ordinary detail and edges untouched. Runs entirely in
++ * the 8-bit domain the CPU debayer already uses (high byte of each pixel),
++ * and is only invoked for CSI-2 packed inputs (dpcSupported_).
++ */
++void DebayerCpuThread::dpcLine(uint8_t *line)
++{
++	const unsigned int bpp = debayer_->inputConfig_.bpp;
++	const unsigned int ppg = debayer_->inputConfig_.patternSize.width;
++	const unsigned int bpg = ppg * bpp / 8; /* bytes per pixel group, incl. LSB tail */
++	const unsigned int numPixels = debayer_->window_.width;
++	const int thr = static_cast<int>(debayer_->dpcThreshold_);
++
++	/* Byte offset of pixel i, skipping the packed group's LSB tail byte(s). */
++	auto off = [ppg, bpg](unsigned int i) { return (i / ppg) * bpg + (i % ppg); };
++
++	for (unsigned int i = 2; i + 2 < numPixels; i++) {
++		uint8_t *p = &line[off(i)];
++		const int a = line[off(i - 2)];
++		const int b = line[off(i + 2)];
++		const int lo = std::min(a, b);
++		const int hi = std::max(a, b);
++		const int v = *p;
++
++		if (v > hi + thr)
++			*p = static_cast<uint8_t>(hi);
++		else if (v < lo - thr)
++			*p = static_cast<uint8_t>(lo);
++	}
++}
++
+ void DebayerCpuThread::setupInputMemcpy(const uint8_t *linePointers[])
+ {
+ 	const unsigned int patternHeight = debayer_->inputConfig_.patternSize.height;
+@@ -798,6 +845,8 @@ void DebayerCpuThread::setupInputMemcpy(const uint8_t *linePointers[])
+ 		memcpy(lineBuffers_[i].data(),
+ 		       linePointers[i + 1] - lineBufferPadding_,
+ 		       lineBufferLength_);
++		if (debayer_->dpcEnable_)
++			dpcLine(lineBuffers_[i].data() + lineBufferPadding_);
+ 		linePointers[i + 1] = lineBuffers_[i].data() + lineBufferPadding_;
+ 	}
+ 
+@@ -826,6 +875,8 @@ void DebayerCpuThread::memcpyNextLine(const uint8_t *linePointers[])
+ 	memcpy(lineBuffers_[lineBufferIndex_].data(),
+ 	       linePointers[patternHeight] - lineBufferPadding_,
+ 	       lineBufferLength_);
++	if (debayer_->dpcEnable_)
++		dpcLine(lineBuffers_[lineBufferIndex_].data() + lineBufferPadding_);
+ 	linePointers[patternHeight] = lineBuffers_[lineBufferIndex_].data() + lineBufferPadding_;
+ 
+ 	lineBufferIndex_ = (lineBufferIndex_ + 1) % (patternHeight + 1);
+@@ -1075,6 +1126,10 @@ void DebayerCpu::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
+ 
+ 	updateLookupTables(params);
+ 
++	/* Latch DPC parameters for this frame (only active on supported inputs). */
++	dpcEnable_ = dpcSupported_ && params.dpcEnable;
++	dpcThreshold_ = params.dpcThreshold;
++
+ 	/* Copy metadata from the input buffer */
+ 	FrameMetadata &metadata = output->_d()->metadata();
+ 	metadata.status = input->metadata().status;
+diff --git a/src/libcamera/software_isp/debayer_cpu.h b/src/libcamera/software_isp/debayer_cpu.h
+index 5281c65..fcfea3e 100644
+--- a/src/libcamera/software_isp/debayer_cpu.h
++++ b/src/libcamera/software_isp/debayer_cpu.h
+@@ -147,6 +147,14 @@ private:
+ 	std::array<double, kGammaLookupSize> gammaTable_;
+ 	LookupTable gammaLut_;
+ 	bool ccmEnabled_;
++	/*
++	 * Defective-pixel correction. dpcSupported_ is set at configure() time
++	 * for CSI-2 packed inputs (where each pixel's high 8 bits occupy one
++	 * byte). dpcEnable_/dpcThreshold_ are latched per-frame from the IPA.
++	 */
++	bool dpcSupported_;
++	bool dpcEnable_;
++	uint32_t dpcThreshold_;
+ 	DebayerParams params_;
+ 
+ 	debayerFn debayer0_;
