@@ -1,0 +1,64 @@
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -617,6 +617,32 @@
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("imx335", CameraSensorHelperImx335)
+ 
++class CameraSensorHelperImx355 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx355()
++	{
++		/* Reasoned: standard Sony 64 at 10bits, not from a datasheet. */
++		blackLevel_ = 4096;
++		/* From the mainline imx355 driver: gain = 1024 / (1024 - code). */
++		gain_ = AnalogueGainLinear{ 0, 1024, -1, 1024 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("imx355", CameraSensorHelperImx355)
++
++class CameraSensorHelperImx363 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx363()
++	{
++		/* Reasoned: standard Sony 64 at 10bits, not from a datasheet. */
++		blackLevel_ = 4096;
++		/* From the mainline imx363 driver: gain = 1024 / (1024 - code). */
++		gain_ = AnalogueGainLinear{ 0, 1024, -1, 1024 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("imx363", CameraSensorHelperImx363)
++
+ class CameraSensorHelperImx415 : public CameraSensorHelper
+ {
+ public:
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -261,6 +261,26 @@
+ 			.testPatternModes = {},
+ 			.sensorDelays = { },
+ 		} },
++		{ "imx355", {
++			.unitCellSize = { 1120, 1120 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 1,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
++		{ "imx363", {
++			.unitCellSize = { 1400, 1400 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 1,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
+ 		{ "imx415", {
+ 			.unitCellSize = { 1450, 1450 },
+ 			.testPatternModes = {},
