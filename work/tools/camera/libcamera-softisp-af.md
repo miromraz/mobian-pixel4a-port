@@ -47,10 +47,8 @@ that demo app does not exist in 0.7.2.
   registers that trip `-Wunused-but-set-variable` under our `werror` build. Its
   final metric only uses the green channel, so I kept just `g0/g1` and the
   identical computation `sharpness += (g-g0)*(g-g0)` (skip-one-pixel), gated to
-  the center-of-frame cell, normalized `1000*sharpness/sumG`. Byte-identical
-  numerics, minus the dead registers. Added a `if (sumG)` guard to the
-  normalization to avoid a SIGFPE on an all-black line (the branch's only
-  divide-by-zero hazard).
+  the center-of-frame cell. Added a guard to avoid a SIGFPE on an all-black
+  line (the branch's only divide-by-zero hazard).
 - **AGC merge.** Our VBLANK-extending AGC is preserved verbatim. The
   brightness/AE-disable/manual-exposure controls were merged *around* it:
   `exposureMSV /= brightness` at the top of `updateExposure()`; the
@@ -60,6 +58,113 @@ that demo app does not exist in 0.7.2.
 - **`setSensorControls` signal widened** `Signal<const ControlList&>` →
   `Signal<const ControlList&, const ControlList&>` through `soft.mojom`,
   `software_isp.{h,cpp}` and the `simple` pipeline handler.
+
+## P1 fix — luma-invariant sharpness metric (`swstats_cpu.cpp`)
+
+The carried metric normalized `1000 * Σ(Δg)² / Σg`: the numerator scales as
+luma² but the divisor `Σg` only as luma¹, so the whole metric scaled with
+luma. An AGC/exposure drift then read as a sharpness change (destabilizing the
+focus-loss re-scan and biasing peak selection). Fixed by normalizing with the
+center-cell green **mean squared** instead:
+
+    stats.sharpness += 1000000 * Σ(Δg)² / meanGc²      (meanGc = ΣgC / nC)
+
+where `ΣgC`/`nC` are accumulated over the same center 5×5 cell as `Σ(Δg)²`.
+This makes the metric luma-invariant (matching the offline `afanalyse.py`,
+which divides by mean²). The `1e6` factor keeps the integer ratio in a useful
+range; absolute scale is irrelevant since the AF loop only compares sharpness
+across positions. Both divisor terms now scale as luma², so exposure cancels.
+
+**Verified** offline by replaying both formulas on a real frame scaled ×2
+(simulating +1 stop): old metric ratio **2.00×** (scales with luma — the bug),
+new metric ratio **1.00×** (luma-invariant — fixed). Build-verified under
+`-Werror` on aarch64; deployed; AF pipeline healthy (lens found, sweep
+triggers, no regression). The macros are shared by all 8 Bayer line variants,
+so the one edit covers every format.
+
+## P2/P4/P5/P6/P7 — search, settle, window, monitor, confidence
+
+Measured on a lit textured target (CD rack, 10-30 cm) with a clean reference
+built from raw camss RDI captures (`rawsweep.sh`/`rawanalyse.py`) — libcamera's
+own AF corrupts any focus sweep, so the reference must bypass it.
+
+Reference (raw, luma²-normalised VoL, AF window): focus curve rises 0.11→**0.31**
+at fabs≈3072 then falls, 2.56× peak/trough — a real, smooth optimum.
+
+- **P4 coarse-to-fine + parabola.** `step /= 10` (fine phase never ran) → `/= 4`
+  so a real fine pass runs (verified live: coarse step 2 → fine step 0.5, 102
+  steps), plus parabolic interpolation through the best three fine samples for a
+  sub-step peak. Neighbours tracked in the sweep, falls back to the best sample.
+- **P5 per-step settle.** Measured: the closed-loop VCM settles in **under one
+  frame** (a 3900→3100 jump reads the settled value on frame 0), so a 2-frame
+  per-step skip is ample; frames during motion are discarded.
+- **P2 monitor/hysteresis.** Replaced the single-frame `|Δ|>0.3·max` re-scan
+  trigger with a rolling baseline (EMA) + `trigger_threshold` 40 % + `sensitivity`
+  10 consecutive frames. Unit-tested: ±15 % noise over 300 frames → 0 re-scans;
+  a sustained 60 % drop → re-scan at frame 29. Live 3-min static hold → 0
+  spurious re-scans.
+- **P7 confidence.** `Focused` now requires peak > 1.5× the sweep's defocus
+  floor (`sharpness_min`), not `sharpness_max>0`. Live: 2.13× peak/floor →
+  Focused; a flat scene (≈1×) → Failed.
+- **P6 window.** Widened from the single `[0.6,0.8)` cell to the central 3×3
+  (`[0.2,0.8)`) so off-centre subjects still drive focus.
+
+### SOLVED — the ~500-code shortfall was a byte/pixel unit bug in the stats window
+
+The residual "converges to fabs≈2590 while the optimum is ≈3072" was **not** the
+AF search, **not** attribution/latency, and **not** the sharpness formula. It was
+the AF stats *window* landing on the wrong part of the frame.
+
+Proof (decisive experiment, `swstats_cpu.cpp:255` instrumented to log the online
+`stats->sharpness` vs the commanded position, lens parked in `AfModeManual`):
+
+- online metric, measured **statically** with the lens parked, peaks at
+  **fabs≈2560** — so it is a bad *statistic*, not a lens-attribution lag (a
+  parked lens has no dynamics);
+- on the **same** frames, the sharpness of the actual output image over the
+  *same* window peaks at ≈2944 — the statistic disagrees with its own imagery.
+
+Root cause (`swstats_cpu.cpp`, `SWSTATS_ACCUMULATE_LINE_STATS`): the horizontal
+window test `(5*x)/window_.width` divides the loop index `x` by the **pixel**
+width — but for CSI2-packed inputs (the live path is
+`2016x1512-RGGB-10-CSI2P`, sampler `statsGBRG10PLine0`) `x` counts **bytes**
+(`x += 5`, `widthInBytes = width*5/4`). So the horizontal `[0.2,0.8)` gate
+collapsed to roughly `[0.16,0.48)` of the frame and shifted **left of centre**,
+onto nearer scene content that focuses ~250-500 codes short. The vertical gate
+(`y` in lines) was unaffected — which is why the shift was purely horizontal and
+looked like a constant offset.
+
+**Fix:** gate on `xGateW`, the sample loop's actual x-extent (`window_.width`
+for unpacked formats, `widthInBytes` for the four CSI2-packed samplers). One new
+variable, four one-line assignments, and the divisor in the macro. The metric
+formula, subsampling and normalisation are unchanged.
+
+**Result (measured live):** the online static curve now peaks at **fabs≈2817**
+(matching VoL over the correct centred window); Continuous AF converges at
+**fabs≈2836** (6-run range 2672-2918, was ≈2590). Converged sharpness over the
+reference rack crop rose from **88.3 % → 96.8 %** of the exhaustive-sweep
+optimum (3072). Before/after spine text: `docs/camera/af-spine-before-after.png`
+(and `af-spine-fabs{2590,2836,3072}.png`).
+
+Note on the residual 2836 vs 3072: the scene is a tilted multi-depth rack (a
+per-region focus map spans fabs 2560-3584). 3072 is the optimum of the specific
+left-of-centre crop the offline `rawanalyse.py` uses; the *centred* AF window's
+honest VoL optimum is ≈2816-2944. Reaching exactly 3072 would require
+subject/window selection on the off-centre rack, which is a policy choice, not a
+statistic bug — and the byte/pixel gate bug is almost certainly present upstream
+for any CSI2-packed input using this AF stats window (worth reporting).
+
+### P3 (kernel `>>4`) and S2 (EEPROM) — investigated, not shipped
+
+- **P3:** the clean curve shows the used focus range spans only DAC ±128 and the
+  peak plateau is ~8 DAC codes wide (broad DoF). The `>>4` mapping already
+  reaches *every* DAC code in that range at finer-than-DoF resolution, so
+  removing it gives **no measurable sharpness gain** on the test scene (its only
+  benefit is extended macro/infinity range, untestable with a fixed subject, and
+  it would need search bounds to avoid regressing mid-range AF). Not flashed.
+- **S2:** the module EEPROM responds (reg 0x0010 = 0x1b90) but the `AFOffset`
+  block (rel 0x14, 9 B) reads **all zeros** — blank on this unit, no calibrated
+  bounds. Per the schema's lack of a CRC, trusted the measurement instead.
 
 ## Controls exposed (visible in `cam --list-controls`)
 
@@ -131,7 +236,8 @@ peak-vs-plateau ratio would be stronger (noted in-code).
 - **Sharpness window:** the center cell of a 5×5 grid, i.e.
   `(5*x)/window_.width == 3 && (5*y)/window_.height == 3`. Metric is the
   green-channel skip-one-pixel first difference squared, summed over that cell
-  and normalized `1000 * Σ(g−g0)² / Σg` per line.
+  and normalized `1e6 * Σ(g−g0)² / meanGc²` per line (luma-invariant, see the
+  P1 fix section above).
 - **LensPosition → VCM:** `focus_pos/100 * (focus_max − focus_min)` written to
   `V4L2_CID_FOCUS_ABSOLUTE`. (Omits the `+ focus_min` offset — carried bug,
   harmless when `focus_min == 0`.)

@@ -1,4 +1,4 @@
-diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/internal/software_isp/software_isp.h libcamera-af/include/libcamera/internal/software_isp/software_isp.h
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/include/libcamera/internal/software_isp/software_isp.h libcamera-af/include/libcamera/internal/software_isp/software_isp.h
 --- libcamera-0.7.2/include/libcamera/internal/software_isp/software_isp.h	2026-07-10 12:12:38.000000000 +0200
 +++ libcamera-af/include/libcamera/internal/software_isp/software_isp.h	2026-08-03 17:39:58.197797109 +0200
 @@ -86,11 +86,11 @@
@@ -15,7 +15,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/internal/software_isp
  	void statsReady(uint32_t frame, uint32_t bufferId);
  	void inputReady(FrameBuffer *input);
  	void outputReady(FrameBuffer *output);
-diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/internal/software_isp/swisp_stats.h libcamera-af/include/libcamera/internal/software_isp/swisp_stats.h
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/include/libcamera/internal/software_isp/swisp_stats.h libcamera-af/include/libcamera/internal/software_isp/swisp_stats.h
 --- libcamera-0.7.2/include/libcamera/internal/software_isp/swisp_stats.h	2026-07-10 12:12:38.000000000 +0200
 +++ libcamera-af/include/libcamera/internal/software_isp/swisp_stats.h	2026-08-03 17:35:53.787014159 +0200
 @@ -43,6 +43,10 @@
@@ -29,7 +29,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/internal/software_isp
  };
  
  } /* namespace libcamera */
-diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/internal/software_isp/swstats_cpu.h libcamera-af/include/libcamera/internal/software_isp/swstats_cpu.h
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/include/libcamera/internal/software_isp/swstats_cpu.h libcamera-af/include/libcamera/internal/software_isp/swstats_cpu.h
 --- libcamera-0.7.2/include/libcamera/internal/software_isp/swstats_cpu.h	2026-07-10 12:12:38.000000000 +0200
 +++ libcamera-af/include/libcamera/internal/software_isp/swstats_cpu.h	2026-08-03 17:36:13.717065649 +0200
 @@ -67,7 +67,7 @@
@@ -79,7 +79,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/internal/software_isp
  
  	void processBayerFrame2(MappedFrameBuffer &in);
  
-diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/ipa/soft.mojom libcamera-af/include/libcamera/ipa/soft.mojom
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/include/libcamera/ipa/soft.mojom libcamera-af/include/libcamera/ipa/soft.mojom
 --- libcamera-0.7.2/include/libcamera/ipa/soft.mojom	2026-07-10 12:12:38.000000000 +0200
 +++ libcamera-af/include/libcamera/ipa/soft.mojom	2026-08-03 17:39:49.761098639 +0200
 @@ -10,6 +10,7 @@
@@ -99,10 +99,10 @@ diff -ruN -x bld -x .git libcamera-0.7.2/include/libcamera/ipa/soft.mojom libcam
  	setIspParams();
  	metadataReady(uint32 frame, libcamera.ControlList metadata);
  };
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp libcamera-af/src/ipa/simple/algorithms/af.cpp
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp libcamera-af/src/ipa/simple/algorithms/af.cpp
 --- libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp	1970-01-01 01:00:00.000000000 +0100
-+++ libcamera-af/src/ipa/simple/algorithms/af.cpp	2026-08-03 17:56:22.145988758 +0200
-@@ -0,0 +1,205 @@
++++ libcamera-af/src/ipa/simple/algorithms/af.cpp	2026-08-03 23:47:50.030958356 +0200
+@@ -0,0 +1,296 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +/*
 + * Copyright (C) 2025 Vasiliy Doylov <nekodevelopper@gmail.com>
@@ -201,65 +201,151 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp libcam
 +
 +void Af::restart(IPAContext &context)
 +{
++	auto &f = context.configuration.focus;
 +	steps = 0;
-+	context.configuration.focus.focus_max_pos = 0;
-+	context.configuration.focus.sharpness_max = 0;
-+	context.configuration.focus.start = 0;
-+	context.configuration.focus.stop = 100;
-+	context.configuration.focus.step = 2;
-+	context.configuration.focus.skip = 10;
-+	context.configuration.focus.af_state = controls::AfStateScanning;
++	f.focus_max_pos = 0;
++	f.sharpness_max = 0;
++	f.sharpness_min = UINT64_MAX;
++	f.start = 0;
++	f.stop = 100;
++	f.step = 2;
++	f.sample_step = 2;
++	f.skip = 10;
++	f.prev_val = 0;
++	f.prev_pos = 0;
++	f.best_lo_val = 0;
++	f.best_hi_val = 0;
++	f.want_hi = false;
++	f.af_state = controls::AfStateScanning;
 +	context.activeState.knobs.focus_pos = 0;
 +	context.activeState.knobs.focus_sweep = true;
 +	LOG(IPASoftAutoFocus, Info) << "Starting focus sweep";
 +}
 +
++/*
++ * Anti-hunting monitor (P2). While locked, keep a rolling baseline of the scene
++ * metric so slow lighting drift is tracked rather than chased. Re-scan only when
++ * the metric deviates from that baseline by more than trigger_threshold for
++ * sensitivity consecutive frames -- the hysteresis is what stops per-frame
++ * sensor noise from throwing the lens into a full rescan (the old code
++ * re-triggered on a single 30 % wobble).
++ */
++void Af::monitor(IPAContext &context, uint64_t sharp)
++{
++	auto &f = context.configuration.focus;
++	constexpr uint64_t trigger_threshold = 40; /* percent from baseline */
++	constexpr int sensitivity = 10;		    /* consecutive frames */
++
++	f.monitor = (f.monitor * 15 + sharp) / 16;
++	uint64_t dev = utils::abs_diff(sharp, f.monitor);
++	if (f.monitor && dev > f.monitor * trigger_threshold / 100)
++		f.lost++;
++	else
++		f.lost = 0;
++	if (f.lost >= sensitivity) {
++		LOG(IPASoftAutoFocus, Info) << "Scene change -> re-scan (dev "
++			<< dev << " base " << f.monitor << ")";
++		restart(context);
++	}
++}
++
 +void Af::step(IPAContext &context, double &focus_pos, uint64_t sharp, bool &sweep, bool continuous)
 +{
++	auto &f = context.configuration.focus;
 +	steps++;
-+	/* Even for sweep, we need some time to move to new lens position */
-+	if (context.configuration.focus.skip != 0) {
-+		context.configuration.focus.skip--;
++
++	/*
++	 * Per-step settle (P5): discard frames captured during/just after a lens
++	 * move so sharpness is measured at rest, not mid-slew. The VCM is
++	 * closed-loop and settles in under one frame (measured), so a small skip
++	 * is enough.
++	 */
++	if (f.skip != 0) {
++		f.skip--;
 +		return;
 +	}
++
 +	if (!sweep) {
-+		/*
-+		 * Focus-loss re-scan only makes sense in continuous mode; in
-+		 * auto mode the lens stays put until the next AfTrigger.
-+		 */
-+		if (continuous &&
-+		    utils::abs_diff(sharp, context.configuration.focus.sharpness_max) > context.configuration.focus.sharpness_max * 0.3) {
-+			LOG(IPASoftAutoFocus, Info) << "Focus lost :( -- " << sharp << " " << context.configuration.focus.sharpness_max;
-+			restart(context);
-+		}
++		/* Re-scan only makes sense in continuous mode. */
++		if (continuous)
++			monitor(context, sharp);
 +		return;
 +	}
-+	if (sharp > context.configuration.focus.sharpness_max) {
-+		context.configuration.focus.sharpness_max = sharp;
-+		context.configuration.focus.focus_max_pos = focus_pos;
++
++	/*
++	 * Settled measurement at the current position. Track the best sample and
++	 * its immediate neighbours (for the P4 parabolic peak) and the plateau
++	 * floor (for the P7 confidence test).
++	 */
++	if (sharp > f.sharpness_max) {
++		f.best_lo_val = f.prev_val;
++		f.best_lo_pos = f.prev_pos;
++		f.sharpness_max = sharp;
++		f.focus_max_pos = focus_pos;
++		f.want_hi = true;
++	} else if (f.want_hi) {
++		f.best_hi_val = sharp;
++		f.best_hi_pos = focus_pos;
++		f.want_hi = false;
 +	}
-+	focus_pos += context.configuration.focus.step;
-+	if (focus_pos > context.configuration.focus.start && focus_pos < context.configuration.focus.stop)
++	if (sharp < f.sharpness_min)
++		f.sharpness_min = sharp;
++	f.prev_val = sharp;
++	f.prev_pos = focus_pos;
++
++	focus_pos += f.step;
++	if (focus_pos > f.start && focus_pos < f.stop)
 +		return;
 +
++	/* End of this pass: bracket the best and refine, or finish. */
 +	int spread = 5;
-+	context.configuration.focus.start = std::clamp(context.configuration.focus.focus_max_pos - context.configuration.focus.step * spread, 0.0, 100.0);
-+	context.configuration.focus.stop = std::clamp(context.configuration.focus.focus_max_pos + context.configuration.focus.step * spread, 0.0, 100.0);
-+	LOG(IPASoftAutoFocus, Info) << "Best focus on step " << context.configuration.focus.step << " (" << context.configuration.focus.start << ".." << context.configuration.focus.stop << "): " << focus_pos << " value " << context.configuration.focus.sharpness_max;
-+	focus_pos = context.configuration.focus.start;
-+	context.configuration.focus.step /= 10; /* HERE */
-+	context.configuration.focus.skip = 10; /* We need lens to settle after big move */
-+	if (context.configuration.focus.step > 0.2) {
-+		/* We want to search for maximum at smaller step, forget maximum from prev step */
-+		context.configuration.focus.sharpness_max = 0;
++	f.start = std::clamp(f.focus_max_pos - f.step * spread, 0.0, 100.0);
++	f.stop = std::clamp(f.focus_max_pos + f.step * spread, 0.0, 100.0);
++	LOG(IPASoftAutoFocus, Info) << "Best focus on step " << f.step << " ("
++		<< f.start << ".." << f.stop << "): " << f.focus_max_pos
++		<< " value " << f.sharpness_max;
++	focus_pos = f.start;
++	f.sample_step = f.step;	/* spacing of the samples just taken */
++	f.step /= 4;		/* P4: coarse 2 -> fine 0.5 -> stop */
++	f.skip = 2;		/* settle after the jump back to the pass start */
++	if (f.step > 0.2) {
++		/* Run a real fine pass around the coarse peak; keep the plateau
++		 * floor, reset the peak tracker. */
++		f.sharpness_max = 0;
++		f.best_lo_val = 0;
++		f.best_hi_val = 0;
++		f.want_hi = false;
++		f.prev_val = 0;
 +		return;
 +	}
 +
-+	/* We are done */
++	/*
++	 * Done. Parabolic interpolation through the best three fine samples (P4)
++	 * gives a sub-step peak; fall back to the best sample if they don't
++	 * bracket a maximum.
++	 */
++	double peak = f.focus_max_pos;
++	if (f.best_lo_val && f.best_hi_val) {
++		double a = f.best_lo_val, b = f.sharpness_max, c = f.best_hi_val;
++		double denom = a - 2.0 * b + c;
++		if (denom != 0.0) {
++			double off = 0.5 * (a - c) / denom;
++			if (off > -1.0 && off < 1.0)
++				peak = f.focus_max_pos + off * f.sample_step;
++		}
++	}
++	peak = std::clamp(peak, 0.0, 100.0);
++	f.focus_max_pos = peak;
++	focus_pos = peak;
 +	sweep = false;
-+	LOG(IPASoftAutoFocus, Info) << "Sweep end. Best focus: " << context.configuration.focus.focus_max_pos << " steps " << steps;
-+	/* We want to keep sharpness_max, to detect when scene changes (aka focus lost) */
-+	focus_pos = context.configuration.focus.focus_max_pos;
++
++	/* Seed the anti-hunting monitor baseline (P2). */
++	f.monitor = f.sharpness_max;
++	f.lost = 0;
++
++	LOG(IPASoftAutoFocus, Info) << "Sweep end. Best focus: " << peak
++		<< " steps " << steps << " peak " << f.sharpness_max
++		<< " floor " << f.sharpness_min;
 +}
 +
 +void Af::process([[maybe_unused]] IPAContext &context,
@@ -284,16 +370,21 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp libcam
 +		     mode == controls::AfModeContinuous);
 +		if (sweep)
 +			context.configuration.focus.af_state = controls::AfStateScanning;
-+		else if (wasSweeping)
++		else if (wasSweeping) {
 +			/*
-+			 * A scan that never found any sharpness gradient is a
-+			 * failure, not a focus lock.
-+			 * ponytail: sharpness_max > 0 is a weak confidence
-+			 * test; a peak-vs-plateau ratio would be stronger.
++			 * P7: report Focused only on a real peak, i.e. the best
++			 * sharpness stands clearly above the sweep's defocus
++			 * floor. A flat/low-contrast scene (peak ~= floor) is a
++			 * Failed lock, not a false Focused on mere sensor noise.
 +			 */
++			const auto &f = context.configuration.focus;
++			bool focused = f.sharpness_min &&
++				       f.sharpness_min != UINT64_MAX &&
++				       f.sharpness_max > f.sharpness_min * 3 / 2;
 +			context.configuration.focus.af_state =
-+				context.configuration.focus.sharpness_max ? controls::AfStateFocused
-+									  : controls::AfStateFailed;
++				focused ? controls::AfStateFocused
++					: controls::AfStateFailed;
++		}
 +	}
 +
 +	updateFocus(context, frameContext, 0);
@@ -308,10 +399,10 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp libcam
 +} /* namespace ipa::soft::algorithms */
 +
 +} /* namespace libcamera */
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/af.h libcamera-af/src/ipa/simple/algorithms/af.h
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/af.h libcamera-af/src/ipa/simple/algorithms/af.h
 --- libcamera-0.7.2/src/ipa/simple/algorithms/af.h	1970-01-01 01:00:00.000000000 +0100
-+++ libcamera-af/src/ipa/simple/algorithms/af.h	2026-08-03 17:55:09.255585583 +0200
-@@ -0,0 +1,42 @@
++++ libcamera-af/src/ipa/simple/algorithms/af.h	2026-08-03 22:47:20.382860351 +0200
+@@ -0,0 +1,43 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +/*
 + * Copyright (C) 2025 Vasiliy Doylov <nekodevelopper@gmail.com>
@@ -348,13 +439,14 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/af.h libcamer
 +private:
 +	void updateFocus(IPAContext &context, IPAFrameContext &frameContext, double focus);
 +	void step(IPAContext &context, double &focus_pos, uint64_t sharp, bool &sweep, bool continuous);
++	void monitor(IPAContext &context, uint64_t sharp);
 +	void restart(IPAContext &context);
 +};
 +
 +} /* namespace ipa::soft::algorithms */
 +
 +} /* namespace libcamera */
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/agc.cpp libcamera-af/src/ipa/simple/algorithms/agc.cpp
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/agc.cpp libcamera-af/src/ipa/simple/algorithms/agc.cpp
 --- libcamera-0.7.2/src/ipa/simple/algorithms/agc.cpp	2026-08-02 03:10:56.787200161 +0200
 +++ libcamera-af/src/ipa/simple/algorithms/agc.cpp	2026-08-03 17:56:27.356017702 +0200
 @@ -65,12 +65,55 @@
@@ -434,7 +526,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/agc.cpp libca
  
  	if (!context.activeState.agc.valid) {
  		/*
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/agc.h libcamera-af/src/ipa/simple/algorithms/agc.h
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/agc.h libcamera-af/src/ipa/simple/algorithms/agc.h
 --- libcamera-0.7.2/src/ipa/simple/algorithms/agc.h	2026-07-10 12:12:38.000000000 +0200
 +++ libcamera-af/src/ipa/simple/algorithms/agc.h	2026-08-03 17:47:05.659700869 +0200
 @@ -19,6 +19,13 @@
@@ -451,7 +543,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/agc.h libcame
  	void process(IPAContext &context, const uint32_t frame,
  		     IPAFrameContext &frameContext,
  		     const SwIspStats *stats,
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/meson.build libcamera-af/src/ipa/simple/algorithms/meson.build
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/meson.build libcamera-af/src/ipa/simple/algorithms/meson.build
 --- libcamera-0.7.2/src/ipa/simple/algorithms/meson.build	2026-08-02 03:11:23.887422034 +0200
 +++ libcamera-af/src/ipa/simple/algorithms/meson.build	2026-08-03 17:40:56.771358938 +0200
 @@ -7,4 +7,5 @@
@@ -460,7 +552,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/algorithms/meson.build l
      'dpc.cpp',
 +    'af.cpp',
  ])
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/data/uncalibrated.yaml libcamera-af/src/ipa/simple/data/uncalibrated.yaml
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/data/uncalibrated.yaml libcamera-af/src/ipa/simple/data/uncalibrated.yaml
 --- libcamera-0.7.2/src/ipa/simple/data/uncalibrated.yaml	2026-08-02 03:11:28.810795550 +0200
 +++ libcamera-af/src/ipa/simple/data/uncalibrated.yaml	2026-08-03 17:41:00.574707552 +0200
 @@ -21,4 +21,5 @@
@@ -469,10 +561,10 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/data/uncalibrated.yaml l
        threshold: 48
 +  - Af:
  ...
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/ipa_context.h libcamera-af/src/ipa/simple/ipa_context.h
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/ipa_context.h libcamera-af/src/ipa/simple/ipa_context.h
 --- libcamera-0.7.2/src/ipa/simple/ipa_context.h	2026-08-02 03:09:27.586460967 +0200
-+++ libcamera-af/src/ipa/simple/ipa_context.h	2026-08-03 17:55:02.872217107 +0200
-@@ -41,6 +41,15 @@
++++ libcamera-af/src/ipa/simple/ipa_context.h	2026-08-03 22:46:12.269090425 +0200
+@@ -41,6 +41,27 @@
  	struct {
  		std::optional<uint8_t> level;
  	} black;
@@ -480,15 +572,27 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/ipa_context.h libcamera-
 +		int32_t focus_min, focus_max;
 +		double focus_max_pos;
 +		uint64_t sharpness_max;
++		/* Lowest sharpness seen during the sweep = plateau/defocus floor,
++		 * used for the peak-to-plateau confidence test (P7). */
++		uint64_t sharpness_min;
 +		double start, stop, step;
 +		uint32_t skip;
++		/* Coarse-to-fine peak bracketing (P4): the sample immediately
++		 * before and after the running best, for parabolic interpolation,
++		 * plus the previous sample and the step they were spaced by. */
++		double prev_pos, best_lo_pos, best_hi_pos, sample_step;
++		uint64_t prev_val, best_lo_val, best_hi_val;
++		bool want_hi;
++		/* Monitor state for anti-hunting re-scan (P2). */
++		uint64_t monitor;
++		int lost;
 +		/* Reported AF state (controls::AfState* enum). */
 +		int32_t af_state;
 +	} focus;
  };
  
  struct IPAActiveState {
-@@ -69,6 +78,18 @@
+@@ -69,6 +90,18 @@
  		/* 0..2 range, 1.0 = normal */
  		std::optional<float> contrast;
  		std::optional<float> saturation;
@@ -507,7 +611,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/ipa_context.h libcamera-
  	} knobs;
  };
  
-@@ -81,6 +102,10 @@
+@@ -81,6 +114,10 @@
  		int32_t vblank;
  	} sensor;
  
@@ -518,7 +622,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/ipa_context.h libcamera-
  	RGB<float> gains;
  
  	float gamma;
-diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/soft_simple.cpp libcamera-af/src/ipa/simple/soft_simple.cpp
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/soft_simple.cpp libcamera-af/src/ipa/simple/soft_simple.cpp
 --- libcamera-0.7.2/src/ipa/simple/soft_simple.cpp	2026-08-02 03:10:21.983580104 +0200
 +++ libcamera-af/src/ipa/simple/soft_simple.cpp	2026-08-03 17:39:39.917728568 +0200
 @@ -78,6 +78,7 @@
@@ -569,7 +673,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/ipa/simple/soft_simple.cpp libcamer
  }
  
  std::string IPASoftSimple::logPrefix() const
-diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/pipeline/simple/simple.cpp libcamera-af/src/libcamera/pipeline/simple/simple.cpp
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/libcamera/pipeline/simple/simple.cpp libcamera-af/src/libcamera/pipeline/simple/simple.cpp
 --- libcamera-0.7.2/src/libcamera/pipeline/simple/simple.cpp	2026-08-02 03:08:57.372873850 +0200
 +++ libcamera-af/src/libcamera/pipeline/simple/simple.cpp	2026-08-03 17:40:50.828001831 +0200
 @@ -33,6 +33,7 @@
@@ -635,7 +739,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/pipeline/simple/simple.cp
  		return data->swIsp_->configure(inputCfg, outputCfgs, configInfo);
  	}
  }
-diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/software_isp.cpp libcamera-af/src/libcamera/software_isp/software_isp.cpp
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/libcamera/software_isp/software_isp.cpp libcamera-af/src/libcamera/software_isp/software_isp.cpp
 --- libcamera-0.7.2/src/libcamera/software_isp/software_isp.cpp	2026-07-10 12:12:38.000000000 +0200
 +++ libcamera-af/src/libcamera/software_isp/software_isp.cpp	2026-08-03 17:40:05.771159237 +0200
 @@ -436,9 +436,9 @@
@@ -650,28 +754,45 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/software_isp
  }
  
  void SoftwareIsp::statsReady(uint32_t frame, uint32_t bufferId)
-diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.cpp libcamera-af/src/libcamera/software_isp/swstats_cpu.cpp
+diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.cpp libcamera-af/src/libcamera/software_isp/swstats_cpu.cpp
 --- libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.cpp	2026-07-10 12:12:38.000000000 +0200
-+++ libcamera-af/src/libcamera/software_isp/swstats_cpu.cpp	2026-08-03 17:37:42.377323617 +0200
-@@ -177,7 +177,9 @@
++++ libcamera-af/src/libcamera/software_isp/swstats_cpu.cpp	2026-08-03 23:45:01.283061169 +0200
+@@ -177,7 +177,14 @@
                                            \
  	uint64_t sumR = 0;                \
  	uint64_t sumG = 0;                \
 -	uint64_t sumB = 0;
 +	uint64_t sumB = 0;                \
 +	pixel_t g0 = 0, g1 = 0;           \
-+	uint64_t sharpness = 0;
++	uint64_t sharpness = 0;           \
++	uint64_t sumGc = 0;               \
++	unsigned int nGc = 0;             \
++	/* x-extent of the sample loop: pixels for unpacked formats, bytes for \
++	 * CSI2-packed ones. The packed samplers override this. */ \
++	unsigned int xGateW = window_.width;
  
  #define SWSTATS_ACCUMULATE_LINE_STATS(div) \
  	sumR += r;                         \
-@@ -187,14 +189,20 @@
+@@ -187,14 +194,42 @@
  	yVal = r * kRedYMul;               \
  	yVal += g * kGreenYMul;            \
  	yVal += b * kBlueYMul;             \
 -	stats.yHistogram[yVal * SwIspStats::kYHistogramSize / (256 * 256 * (div))]++;
 +	stats.yHistogram[yVal * SwIspStats::kYHistogramSize / (256 * 256 * (div))]++; \
-+	if (g0 != 0 && ((5 * x) / window_.width == 3) && ((5 * y) / window_.height == 3)) \
-+		sharpness += (g - g0) * (g - g0); \
++	/* P6: AF metric over the central 3x3 of a 5x5 grid ([0.2,0.8) of frame) \
++	 * instead of a single centre cell, so off-centre subjects still drive \
++	 * focus. The horizontal test uses xGateW (the sample loop's x-extent) \
++	 * rather than window_.width: for CSI2-packed formats the loop index x \
++	 * counts bytes, not pixels, so dividing by the pixel width shrank the \
++	 * window and shifted it left of centre onto nearer scene content, \
++	 * biasing focus short of the true optimum. */ \
++	if ((5 * x) / xGateW >= 1 && (5 * x) / xGateW <= 3 && \
++	    (5 * y) / window_.height >= 1 && (5 * y) / window_.height <= 3) { \
++		if (g0 != 0)               \
++			sharpness += (g - g0) * (g - g0); \
++		sumGc += g;                \
++		nGc++;                     \
++	}                                  \
 +	g0 = g1;                           \
 +	g1 = g;
  
@@ -680,15 +801,25 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  	stats.sum_.g() += sumG;     \
 -	stats.sum_.b() += sumB;
 +	stats.sum_.b() += sumB;     \
-+	if (sumG)                   \
-+		stats.sharpness += 1000 * sharpness / sumG;
++	/*                          \
++	 * Normalize by the center-cell green mean squared so the metric is \
++	 * luma-invariant: the numerator Sum(dg)^2 scales as luma^2, so does \
++	 * the divisor. An AGC/exposure change no longer reads as a sharpness \
++	 * change (matches the offline afanalyse.py). Scaled up to keep the \
++	 * integer ratio in a useful range.                                  \
++	 */                         \
++	if (nGc) {                  \
++		uint64_t meanGc = sumGc / nGc; \
++		if (meanGc)         \
++			stats.sharpness += 1000000ull * sharpness / (meanGc * meanGc); \
++	}
  
 -void SwStatsCpu::statsBGGR8Line0(const uint8_t *src[], SwIspStats &stats)
 +void SwStatsCpu::statsBGGR8Line0(const uint8_t *src[], SwIspStats &stats, int y)
  {
  	const uint8_t *src0 = src[1] + window_.x;
  	const uint8_t *src1 = src[2] + window_.x;
-@@ -219,7 +227,7 @@
+@@ -219,7 +254,7 @@
  	SWSTATS_FINISH_LINE_STATS()
  }
  
@@ -697,7 +828,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  {
  	const uint16_t *src0 = (const uint16_t *)src[1] + window_.x;
  	const uint16_t *src1 = (const uint16_t *)src[2] + window_.x;
-@@ -245,7 +253,7 @@
+@@ -245,7 +280,7 @@
  	SWSTATS_FINISH_LINE_STATS()
  }
  
@@ -706,7 +837,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  {
  	const uint16_t *src0 = (const uint16_t *)src[1] + window_.x;
  	const uint16_t *src1 = (const uint16_t *)src[2] + window_.x;
-@@ -271,7 +279,7 @@
+@@ -271,7 +306,7 @@
  	SWSTATS_FINISH_LINE_STATS()
  }
  
@@ -715,7 +846,15 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  {
  	const uint8_t *src0 = src[1] + window_.x * 5 / 4;
  	const uint8_t *src1 = src[2] + window_.x * 5 / 4;
-@@ -297,7 +305,7 @@
+@@ -281,6 +316,7 @@
+ 		std::swap(src0, src1);
+ 
+ 	SWSTATS_START_LINE_STATS(uint8_t)
++	xGateW = widthInBytes;
+ 
+ 	/* x += 5 sample every other 2x2 block */
+ 	for (unsigned int x = 0; x < widthInBytes; x += 5) {
+@@ -297,7 +333,7 @@
  	SWSTATS_FINISH_LINE_STATS()
  }
  
@@ -724,7 +863,15 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  {
  	const uint8_t *src0 = src[1] + window_.x * 5 / 4;
  	const uint8_t *src1 = src[2] + window_.x * 5 / 4;
-@@ -323,7 +331,7 @@
+@@ -307,6 +343,7 @@
+ 		std::swap(src0, src1);
+ 
+ 	SWSTATS_START_LINE_STATS(uint8_t)
++	xGateW = widthInBytes;
+ 
+ 	/* x += 5 sample every other 2x2 block */
+ 	for (unsigned int x = 0; x < widthInBytes; x += 5) {
+@@ -323,13 +360,14 @@
  	SWSTATS_FINISH_LINE_STATS()
  }
  
@@ -733,7 +880,14 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  {
  	const uint8_t *src0 = src[1] + window_.x * 3 / 2;
  	const uint8_t *src1 = src[2] + window_.x * 3 / 2;
-@@ -349,7 +357,7 @@
+ 	const unsigned int widthInBytes = window_.width * 3 / 2;
+ 
+ 	SWSTATS_START_LINE_STATS(uint8_t)
++	xGateW = widthInBytes;
+ 
+ 	if (swapLines_)
+ 		std::swap(src0, src1);
+@@ -349,13 +387,14 @@
  	SWSTATS_FINISH_LINE_STATS()
  }
  
@@ -742,7 +896,14 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  {
  	const uint8_t *src0 = src[1] + window_.x * 3 / 2;
  	const uint8_t *src1 = src[2] + window_.x * 3 / 2;
-@@ -392,6 +400,7 @@
+ 	const unsigned int widthInBytes = window_.width * 3 / 2;
+ 
+ 	SWSTATS_START_LINE_STATS(uint8_t)
++	xGateW = widthInBytes;
+ 
+ 	if (swapLines_)
+ 		std::swap(src0, src1);
+@@ -392,6 +431,7 @@
  	for (auto &s : stats_) {
  		s.sum_ = RGB<uint64_t>({ 0, 0, 0 });
  		s.yHistogram.fill(0);
@@ -750,7 +911,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  	}
  }
  
-@@ -409,8 +418,10 @@
+@@ -409,8 +449,10 @@
  	if (valid) {
  		sharedStats_->sum_ = RGB<uint64_t>({ 0, 0, 0 });
  		sharedStats_->yHistogram.fill(0);
@@ -761,7 +922,7 @@ diff -ruN -x bld -x .git libcamera-0.7.2/src/libcamera/software_isp/swstats_cpu.
  			for (unsigned int j = 0; j < SwIspStats::kYHistogramSize; j++)
  				sharedStats_->yHistogram[j] += s.yHistogram[j];
  		}
-@@ -589,7 +600,7 @@
+@@ -589,7 +631,7 @@
  		/* linePointers[0] is not used by any stats0_ functions */
  		linePointers[1] = src;
  		linePointers[2] = src + stride_;
