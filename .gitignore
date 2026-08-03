@@ -30,3 +30,6 @@ vmlinuz*
 modules.*
 work/hexagonrpc/bin/
 work/hexagonrpc/lib/
+
+# Local libcamera/plasma-camera source trees used to generate the patches above.
+work/tools/camera/build/

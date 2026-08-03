@@ -74,6 +74,38 @@ stop emitting pixel data altogether, so the frames arrive as zeroes.
 
 The rear camera then needed none of this fighting: with the same CSIPHY fix in
 place its 636 MHz link -- 1272 Mbps per lane, nearly double the front's -- worked
-on the first try. Its driver is out-of-tree (`sdm670-mainline`, Pixel 3a) and
-there is no autofocus: the VCM has no mainline driver, so focus sits wherever the
-lens rests. Its one real bug was the flip defaults above.
+on the first try. Its driver is out-of-tree (`sdm670-mainline`, Pixel 3a). Its one
+real bug was the flip defaults above.
+
+## Rear autofocus
+
+The rear module's focus actuator is an **ON Semi LC898219XI at i2c 7-bit 0x72 on
+bus 12**, and its coil rail (`cam_vaf`, 2.85 V) hangs off pm6150l GPIO12. Both were
+recovered from the stock Android CamX sensor-module blob and then confirmed on the
+device -- register `0xF0` reads `0xa5`, the chip's signature. `parse_sensormodule.py`
+is the parser for those blobs; point it at a `com.qti.sensormodule.*.bin` from a
+vendor partition. It also decodes the OIS and EEPROM slave addresses.
+
+The driver is imported from `sdm670-mainline` (same tree and tag as `imx363.c`) and
+the DT declares the rail, the actuator node and `lens-focus`, which is all the v4l2
+core needs to build the sensor->lens ancillary link. Focus is then a plain control:
+
+    v4l2-ctl -d /dev/$(...lc898219xi subdev...) --set-ctrl focus_absolute=3584
+
+Range is 0..4095. **The lens autosuspends one second after the last write and loses
+its position**, so anything holding a focus setting has to re-assert it -- that is
+what the dwell loop in `afsweep.sh` is for.
+
+    ./afsweep.sh              # on the phone: sweep focus while streaming, dump frames
+    ./afanalyse.py /home/mobian/afcap   # focus metric per lens position
+
+`afanalyse.py` normalises the sharpness metric by mean luma squared, because the
+software ISP's AGC drifts during a sweep and an unnormalised metric happily
+reports exposure changes as focus changes. Sweep against a **textured subject at
+10-30 cm**: aimed at a blank or dark surface the metric measures amplified sensor
+noise and the curve is flat no matter what the coil does.
+
+OIS is not supported and is not planned. The controller is an LC898123F40 at 0x3e
+(it also fronts the EEPROM reads); no driver for it exists in any public tree, it
+has no published register map, and it needs a proprietary DSP firmware pushed over
+i2c on every power-up.
