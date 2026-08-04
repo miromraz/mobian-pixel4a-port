@@ -518,9 +518,9 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
 +
 +} /* namespace libcamera */
 diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/agc.cpp libcamera-af/src/ipa/simple/algorithms/agc.cpp
---- libcamera-0.7.2/src/ipa/simple/algorithms/agc.cpp	2026-08-02 03:10:56.787200161 +0200
-+++ libcamera-af/src/ipa/simple/algorithms/agc.cpp	2026-08-03 17:56:27.356017702 +0200
-@@ -65,12 +65,55 @@
+--- libcamera-0.7.2/src/ipa/simple/algorithms/agc.cpp	2026-08-04 15:36:18.122648286 +0200
++++ libcamera-af/src/ipa/simple/algorithms/agc.cpp	2026-08-04 15:36:35.466127432 +0200
+@@ -63,12 +63,55 @@
  {
  }
  
@@ -576,7 +576,7 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
  
  	double error = kExposureOptimal - exposureMSV;
  
-@@ -165,10 +208,20 @@
+@@ -164,10 +207,20 @@
  		  const SwIspStats *stats,
  		  ControlList &metadata)
  {

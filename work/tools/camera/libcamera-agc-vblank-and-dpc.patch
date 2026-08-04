@@ -57,10 +57,52 @@ index 9457d62..0dde41f 100644
  {
  public:
 diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
-index a13a755..d6e3270 100644
+index a13a755..aeb561c 100644
 --- a/src/ipa/simple/algorithms/agc.cpp
 +++ b/src/ipa/simple/algorithms/agc.cpp
-@@ -67,8 +67,10 @@ Agc::Agc()
+@@ -40,26 +40,24 @@ static constexpr float kExposureOptimal = kExposureBinsCount / 2.0;
+ static constexpr float kExposureSatisfactory = 0.2;
+ 
+ /*
+- * Proportional gain for exposure/gain adjustment. Maps the MSV error to a
+- * multiplicative correction factor:
++ * Exposure is a multiplicative quantity, so the AGC regulates ln(exposure).
++ * A correction expressed as a fixed additive fraction of the error converges
++ * geometrically, which is agonisingly slow far from the target: the earlier
++ * "factor = 1.0 + 0.04 * error" form needed ~18-20 s to answer an 8x change,
++ * because stats only arrive every SwStatsCpu::kStatPerNumFrames (4th) frame.
+  *
+- *   factor = 1.0 + kExpProportionalGain * error
++ * The plant gain measured on this sensor is dMSV/d(ln exposure) ~0.435
++ * (exposure 62 -> 230, dln 1.31, moved MSV 1.096 -> 1.666, dMSV 0.570), so a
++ * deadbeat step would be dln(exposure) = error / 0.435 ~= 2.3 * error.
++ * kExpLoopGain backs that off to a loop gain of ~0.35 for stability margin
++ * across scenes, and kExpMaxRatio bounds a single update so a dramatic scene
++ * change cannot swing exposure by more than 2x per stats frame.
+  *
+- * With kExpProportionalGain = 0.04:
+- *   - max error ~2.5 -> factor 1.10 (~10% step, same as before)
+- *   - error 1.0      -> factor 1.04 (~4% step)
+- *   - error 0.3      -> factor 1.012 (~1.2% step)
+- *
+- * This replaces the fixed 10% bang-bang step with a proportional correction
+- * that converges smoothly and avoids overshooting near the target.
+- */
+-static constexpr float kExpProportionalGain = 0.04;
+-
+-/*
+- * Maximum multiplicative step per frame, to bound the correction when the
+- * scene changes dramatically.
++ * Measured on the device: 3 corrections (~0.3 s) to settle an 8x error, in
++ * both directions, with no overshoot past the kExposureSatisfactory band.
+  */
+-static constexpr float kExpMaxStep = 0.15;
++static constexpr float kExpLoopGain = 0.8f;	/* loop gain ~0.35 */
++static constexpr float kExpMaxRatio = 2.0f;	/* per-update bound */
+ 
+ Agc::Agc()
+ {
+@@ -67,8 +65,10 @@ Agc::Agc()
  
  void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
  {
@@ -71,21 +113,36 @@ index a13a755..d6e3270 100644
  
  	double error = kExposureOptimal - exposureMSV;
  
-@@ -84,44 +86,77 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
- 				-kExpMaxStep, kExpMaxStep);
- 	float factor = 1.0f + step;
+@@ -76,52 +76,86 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
+ 		return;
  
+ 	/*
+-	 * Compute a proportional correction factor. The sign of the error
+-	 * determines the direction: positive error means too dark (increase),
+-	 * negative means too bright (decrease).
++	 * Compute a multiplicative correction factor in log space. The sign of
++	 * the error determines the direction: positive error means too dark
++	 * (factor > 1, increase), negative means too bright (factor < 1,
++	 * decrease). factor ranges over [1/kExpMaxRatio, kExpMaxRatio].
++	 */
++	float logStep = std::clamp(static_cast<float>(error) * kExpLoopGain,
++				   -std::log(kExpMaxRatio), std::log(kExpMaxRatio));
++	float factor = std::exp(logStep);
++
 +	/*
 +	 * The sensor's exposure ceiling grows one line for every extra VBLANK
 +	 * line (the kernel driver widens V4L2_CID_EXPOSURE's range from its
 +	 * V4L2_CID_VBLANK handler). exposureMax in the configuration is the
 +	 * ceiling at vblankMin, so the effective ceiling at the current frame
 +	 * duration is exposureMax + (vblank - vblankMin).
-+	 */
+ 	 */
+-	float step = std::clamp(static_cast<float>(error) * kExpProportionalGain,
+-				-kExpMaxStep, kExpMaxStep);
+-	float factor = 1.0f + step;
 +	auto exposureMaxFor = [&](int32_t vb) {
 +		return agcCfg.exposureMax + (vb - agcCfg.vblankMin);
 +	};
-+
+ 
  	if (factor > 1.0f) {
 -		/* Scene too dark: increase exposure first, then gain. */
 -		if (exposure < context.configuration.agc.exposureMax) {
@@ -163,7 +220,7 @@ index a13a755..d6e3270 100644
  }
  
  void Agc::process(IPAContext &context,
-@@ -142,6 +177,7 @@ void Agc::process(IPAContext &context,
+@@ -142,6 +176,7 @@ void Agc::process(IPAContext &context,
  		 */
  		context.activeState.agc.exposure = frameContext.sensor.exposure;
  		context.activeState.agc.again = frameContext.sensor.gain;
@@ -171,7 +228,7 @@ index a13a755..d6e3270 100644
  		context.activeState.agc.valid = true;
  	}
  
-@@ -152,6 +188,7 @@ void Agc::process(IPAContext &context,
+@@ -152,6 +187,7 @@ void Agc::process(IPAContext &context,
  		 */
  		frameContext.sensor.exposure = context.activeState.agc.exposure;
  		frameContext.sensor.gain = context.activeState.agc.again;
@@ -266,7 +323,7 @@ index 0000000..5be48ab
 +		     DebayerParams *params) override;
 +
 +private:
-+	uint32_t threshold_ = 8;
++	uint32_t threshold_ = 48;
 +};
 +
 +} /* namespace ipa::soft::algorithms */
@@ -294,7 +351,7 @@ index fc90ca5..a6f509b 100644
 +  # Bayer data before demosaic. threshold is the minimum deviation (8-bit
 +  # domain) from both same-colour horizontal neighbours required to correct.
 +  - Dpc:
-+      threshold: 8
++      threshold: 48
  ...
 diff --git a/src/ipa/simple/ipa_context.h b/src/ipa/simple/ipa_context.h
 index 8ccfacb..881e138 100644
@@ -477,7 +534,7 @@ index 49382b4..bc46fd8 100644
 +	BayerFormat inputBayer = BayerFormat::fromPixelFormat(inputCfg.pixelFormat);
 +	dpcSupported_ = inputBayer.packing == BayerFormat::Packing::CSI2;
 +	dpcEnable_ = false;
-+	dpcThreshold_ = 8;
++	dpcThreshold_ = 48;
 +
  	/*
  	 * Lookup tables must be initialized because the initial value is used for
