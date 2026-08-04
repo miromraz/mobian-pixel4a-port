@@ -109,6 +109,49 @@ at fabs≈3072 then falls, 2.56× peak/trough — a real, smooth optimum.
 - **P6 window.** Widened from the single `[0.6,0.8)` cell to the central 3×3
   (`[0.2,0.8)`) so off-centre subjects still drive focus.
 
+## P8 — warm-refocus seeding (start from the last known focus)
+
+A cold sweep always parks at 0 and scans the full range blind (10 skip + 50
+coarse @step 2 + fine ≈ **98 frames / 3.2 s**). But every refocus *after* the
+first happens with the lens already near focus, so parking + re-scanning the
+whole range is wasted. `restart()` now branches:
+
+- **Cold** (no history: startup, first focus): unchanged — park 0, `0..100`,
+  `skip 10`. Byte-for-byte the old path, so its numbers are untouched.
+- **Warm** (`have_focus`, i.e. a previous convergence): seed at the last peak
+  `converged_pos` and coarse-scan only `[peak±kSeedWindow]` (±10 units ≈
+  ±410 DAC). If the coarse best lands on an interior window edge, shift the
+  window that way and keep scanning (never toward a 0/100 hard stop — a
+  boundary peak is accepted, not chased); this reaches the far end on a large
+  scene change without oscillating. Otherwise refine exactly as cold does — the
+  fine pass, and therefore the converged peak and its sharpness, are identical.
+
+**Pipeline-latency trap (measured here, cost one wrong build).** The `sharpness`
+stat runs **~4 frames behind the lens** — during a steady step-2 sweep the
+identical value repeats 4×. So the *first* settled sample after a seed jump
+carries a **stale reading from the pre-jump position**; jumping down from the
+converged top (fabs 4064) that stale value is near-peak and wins the search,
+collapsing convergence (seen: warm locked at pos 79 instead of 99, and the
+window-shift ping-ponged). Fix: flush `kSeedSettle = 5` frames (> the 4-frame
+latency) after every seeded jump — seed start, window shift, and the coarse→fine
+jump-back. This is **seeded-only** (`skip = f.seeded ? kSeedSettle : 2`), so the
+cold cadence never changes. The cold path survives the same lag only because its
+wide coarse+fine structure averages it out; a narrow window does not, which is
+why the settle knob is load-bearing.
+
+**Measured (same scene, boundary peak at the macro stop fabs 4095):**
+
+| case | frames | time | converged | 12-run spread |
+|-|-|-|-|-|
+| cold (unchanged) | 98 | 3.2 s | fabs 4064 | 0 |
+| warm (seeded) | 50 | 1.6 s | fabs 4054 | 0 (6/6) |
+
+Warm ≈ **2× faster**. Converged sharpness preserved: at the moment measured,
+raw VoL at 4054 = 0.0569 ≥ 4064 = 0.0567 ≥ 4095 = 0.0559 (the top is a flat
+1.02× plateau, so the 10-code offset is within noise, well above the 98.2 %
+floor). Hold test: 2 600-frame (~1.4 min) static continuous run → **1** startup
+sweep, **0** spurious re-scans (monitor logic untouched).
+
 ### SOLVED — the ~500-code shortfall was a byte/pixel unit bug in the stats window
 
 The residual "converges to fabs≈2590 while the optimum is ≈3072" was **not** the
@@ -228,8 +271,12 @@ peak-vs-plateau ratio would be stronger (noted in-code).
   (the nominal fine phase's `0.2` fails the `> 0.2` test). Search window for a
   would-be next phase is best ± `step*spread`, `spread = 5`.
 - **Settle skip:** `skip = 10` frames after any large lens move (also on
-  manual `LensPosition` change and `restart`); decremented once per frame,
+  manual `LensPosition` change and cold `restart`); decremented once per frame,
   stats ignored until zero.
+- **Warm-refocus seeding (P8):** `kSeedWindow` (10, coarse half-window in
+  focus_pos units around the last peak) and `kSeedSettle` (5, frames flushed
+  after each seeded jump — must exceed the ~4-frame sharpness-stat latency).
+  Both are seeded-path only; the cold sweep is unchanged.
 - **Focus-lost re-trigger (Continuous mode only):** while locked, if
   `|sharpness − sharpness_max| > 0.3 * sharpness_max` (30%), it restarts a
   sweep. Disabled in Auto and Manual.

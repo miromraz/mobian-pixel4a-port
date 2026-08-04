@@ -101,8 +101,8 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/include/libcamera/ipa/soft.
  };
 diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp libcamera-af/src/ipa/simple/algorithms/af.cpp
 --- libcamera-0.7.2/src/ipa/simple/algorithms/af.cpp	1970-01-01 01:00:00.000000000 +0100
-+++ libcamera-af/src/ipa/simple/algorithms/af.cpp	2026-08-03 23:47:50.030958356 +0200
-@@ -0,0 +1,296 @@
++++ libcamera-af/src/ipa/simple/algorithms/af.cpp	2026-08-04 12:44:37.888949296 +0200
+@@ -0,0 +1,367 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +/*
 + * Copyright (C) 2025 Vasiliy Doylov <nekodevelopper@gmail.com>
@@ -155,6 +155,8 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
 +	context.activeState.knobs.af_mode = controls::AfModeContinuous;
 +	context.configuration.focus.skip = 10;
 +	context.configuration.focus.af_state = controls::AfStateIdle;
++	context.configuration.focus.have_focus = false;
++	context.configuration.focus.seeded = false;
 +	return 0;
 +}
 +
@@ -199,6 +201,24 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
 +
 +static int steps;
 +
++/*
++ * Half-width of the seeded coarse window, in focus_pos units (0..100). A warm
++ * refocus scans only [last-WINDOW .. last+WINDOW] instead of the full range,
++ * expanding outward one window at a time if the peak lands on a (non-limit)
++ * window edge. ~10 units ~= 410 DAC codes on the LC898219XI; a knob because the
++ * "most refocuses are small" assumption is a property of the scene, not code.
++ */
++static constexpr double kSeedWindow = 10.0;
++
++/*
++ * Frames to discard after a seeded lens jump. The sharpness stat runs ~4 frames
++ * behind the lens (measured: identical values repeat 4x during a steady step),
++ * so a jump's first settled sample otherwise carries a stale reading from the
++ * pre-jump position and can win the peak search. Only the seeded path pays this;
++ * the cold sweep's cadence is unchanged.
++ */
++static constexpr uint32_t kSeedSettle = 5;
++
 +void Af::restart(IPAContext &context)
 +{
 +	auto &f = context.configuration.focus;
@@ -206,20 +226,39 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
 +	f.focus_max_pos = 0;
 +	f.sharpness_max = 0;
 +	f.sharpness_min = UINT64_MAX;
-+	f.start = 0;
-+	f.stop = 100;
 +	f.step = 2;
 +	f.sample_step = 2;
-+	f.skip = 10;
-+	f.prev_val = 0;
-+	f.prev_pos = 0;
 +	f.best_lo_val = 0;
 +	f.best_hi_val = 0;
 +	f.want_hi = false;
++	f.prev_val = 0;
 +	f.af_state = controls::AfStateScanning;
-+	context.activeState.knobs.focus_pos = 0;
++
++	if (f.have_focus) {
++		/*
++		 * P8: warm refocus. Seed the search at the last converged
++		 * position and scan a small window around it. The full-range
++		 * park-to-0 slew and most of the coarse pass are skipped; the
++		 * fine pass that follows is identical to the cold path, so the
++		 * converged peak and its sharpness are unchanged. A bounded
++		 * move settles well within a couple of frames.
++		 */
++		f.seeded = true;
++		f.start = std::clamp(f.converged_pos - kSeedWindow, 0.0, 100.0);
++		f.stop = std::clamp(f.converged_pos + kSeedWindow, 0.0, 100.0);
++		f.skip = kSeedSettle;
++	} else {
++		/* Cold start: no history, park and sweep the full range. */
++		f.seeded = false;
++		f.start = 0;
++		f.stop = 100;
++		f.skip = 10;
++	}
++	f.prev_pos = f.start;
++	context.activeState.knobs.focus_pos = f.start;
 +	context.activeState.knobs.focus_sweep = true;
-+	LOG(IPASoftAutoFocus, Info) << "Starting focus sweep";
++	LOG(IPASoftAutoFocus, Info) << "Starting focus sweep (seeded="
++		<< f.seeded << " " << f.start << ".." << f.stop << ")";
 +}
 +
 +/*
@@ -297,6 +336,31 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
 +	if (focus_pos > f.start && focus_pos < f.stop)
 +		return;
 +
++	/*
++	 * P8: seeded coarse pass finished. If the best sits on a window edge
++	 * that is not a hard focus limit, the true peak may lie beyond it:
++	 * shift the window that way and keep scanning coarse (carry the running
++	 * best). Only when the peak is bracketed inside the window -- or pinned
++	 * to a 0/100 hard stop -- do we fall through to the fine refine.
++	 */
++	if (f.seeded && f.step >= 1.0) {
++		double eps = f.step;
++		if (f.focus_max_pos >= f.stop - eps && f.stop < 100.0) {
++			f.start = f.stop;
++			f.stop = std::clamp(f.stop + 2.0 * kSeedWindow, 0.0, 100.0);
++			focus_pos = f.start;
++			f.skip = kSeedSettle;
++			return;
++		}
++		if (f.focus_max_pos <= f.start + eps && f.start > 0.0) {
++			f.stop = f.start;
++			f.start = std::clamp(f.start - 2.0 * kSeedWindow, 0.0, 100.0);
++			focus_pos = f.start;
++			f.skip = kSeedSettle;
++			return;
++		}
++	}
++
 +	/* End of this pass: bracket the best and refine, or finish. */
 +	int spread = 5;
 +	f.start = std::clamp(f.focus_max_pos - f.step * spread, 0.0, 100.0);
@@ -307,7 +371,9 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
 +	focus_pos = f.start;
 +	f.sample_step = f.step;	/* spacing of the samples just taken */
 +	f.step /= 4;		/* P4: coarse 2 -> fine 0.5 -> stop */
-+	f.skip = 2;		/* settle after the jump back to the pass start */
++	/* Settle after the jump back to the pass start. The seeded jump-back can
++	 * come from the top of range with a stale-high reading, so flush harder. */
++	f.skip = f.seeded ? kSeedSettle : 2;
 +	if (f.step > 0.2) {
 +		/* Run a real fine pass around the coarse peak; keep the plateau
 +		 * floor, reset the peak tracker. */
@@ -338,6 +404,11 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/algorithms/a
 +	f.focus_max_pos = peak;
 +	focus_pos = peak;
 +	sweep = false;
++
++	/* Remember this peak so the next refocus can seed from it (P8). */
++	f.converged_pos = peak;
++	f.have_focus = true;
++	f.seeded = false;
 +
 +	/* Seed the anti-hunting monitor baseline (P2). */
 +	f.monitor = f.sharpness_max;
@@ -563,8 +634,8 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/data/uncalib
  ...
 diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/ipa_context.h libcamera-af/src/ipa/simple/ipa_context.h
 --- libcamera-0.7.2/src/ipa/simple/ipa_context.h	2026-08-02 03:09:27.586460967 +0200
-+++ libcamera-af/src/ipa/simple/ipa_context.h	2026-08-03 22:46:12.269090425 +0200
-@@ -41,6 +41,27 @@
++++ libcamera-af/src/ipa/simple/ipa_context.h	2026-08-04 12:33:21.383024547 +0200
+@@ -41,6 +41,32 @@
  	struct {
  		std::optional<uint8_t> level;
  	} black;
@@ -586,13 +657,18 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/ipa_context.
 +		/* Monitor state for anti-hunting re-scan (P2). */
 +		uint64_t monitor;
 +		int lost;
++		/* Warm-refocus seeding (P8): last converged peak, whether we have
++		 * one, and whether the current sweep is a seeded windowed scan. */
++		double converged_pos;
++		bool have_focus;
++		bool seeded;
 +		/* Reported AF state (controls::AfState* enum). */
 +		int32_t af_state;
 +	} focus;
  };
  
  struct IPAActiveState {
-@@ -69,6 +90,18 @@
+@@ -69,6 +95,18 @@
  		/* 0..2 range, 1.0 = normal */
  		std::optional<float> contrast;
  		std::optional<float> saturation;
@@ -611,7 +687,7 @@ diff -ruN -x bld -x .git -x '*.orig' libcamera-0.7.2/src/ipa/simple/ipa_context.
  	} knobs;
  };
  
-@@ -81,6 +114,10 @@
+@@ -81,6 +119,10 @@
  		int32_t vblank;
  	} sensor;
  
