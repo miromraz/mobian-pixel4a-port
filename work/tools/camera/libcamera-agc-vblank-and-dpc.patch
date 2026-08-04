@@ -511,8 +511,88 @@ index 2804315..e5a8bf8 100644
  		{ "imx415", {
  			.unitCellSize = { 1450, 1450 },
  			.testPatternModes = {},
+diff --git a/src/libcamera/shaders/bayer_1x_packed.frag b/src/libcamera/shaders/bayer_1x_packed.frag
+index 0b641a5..f0ec115 100644
+--- a/src/libcamera/shaders/bayer_1x_packed.frag
++++ b/src/libcamera/shaders/bayer_1x_packed.frag
+@@ -80,6 +80,23 @@ float apply_contrast(float value)
+ 		return 1.0 - 0.5 * pow((1.0 - value) / 0.5, contrastExp);
+ }
+ 
++// Soft highlight shoulder. A Naka-Rushton roll-off shoulder(v)=(1+a)v/(1+a*v)
++// is blended toward identity with w=smoothstep(k0,k1,v) so the composite
++// f(v)=v+w*(shoulder(v)-v) is C1 everywhere: continuous slope, no step / Mach
++// band. Below k0 w=0 (identity); at k1 w=1 and shoulder(1)=1 so f(1)=1 exactly
++// (white reachable). Mirrors DebayerCpu::updateGammaTable; k0=0.72, k1=1.0,
++// a=1.5 -> peak slope 1.38, end slope 0.40.
++const float kShoulderK0 = 0.72;
++const float kShoulderK1 = 1.0;
++const float kShoulderA = 1.5;
++
++float apply_shoulder(float value)
++{
++	float w = smoothstep(kShoulderK0, kShoulderK1, value);
++	float shoulder = (1.0 + kShoulderA) * value / (1.0 + kShoulderA * value);
++	return value + w * (shoulder - value);
++}
++
+ void main(void)
+ {
+ 	vec3 rgb;
+@@ -247,6 +264,11 @@ void main(void)
+ 	rgb.g = apply_contrast(rgb.g);
+ 	rgb.b = apply_contrast(rgb.b);
+ 
++	/* Soft highlight shoulder before gamma */
++	rgb.r = apply_shoulder(rgb.r);
++	rgb.g = apply_shoulder(rgb.g);
++	rgb.b = apply_shoulder(rgb.b);
++
+ 	/* Apply gamma after colour correction */
+ 	rgb = pow(rgb, vec3(gamma));
+ 
+diff --git a/src/libcamera/shaders/bayer_unpacked.frag b/src/libcamera/shaders/bayer_unpacked.frag
+index 10c5e94..ea9af43 100644
+--- a/src/libcamera/shaders/bayer_unpacked.frag
++++ b/src/libcamera/shaders/bayer_unpacked.frag
+@@ -39,6 +39,23 @@ float apply_contrast(float value)
+         return 1.0 - 0.5 * pow((1.0 - value) / 0.5, contrastExp);
+ }
+ 
++// Soft highlight shoulder. A Naka-Rushton roll-off shoulder(v)=(1+a)v/(1+a*v)
++// is blended toward identity with w=smoothstep(k0,k1,v) so the composite
++// f(v)=v+w*(shoulder(v)-v) is C1 everywhere: continuous slope, no step / Mach
++// band. Below k0 w=0 (identity); at k1 w=1 and shoulder(1)=1 so f(1)=1 exactly
++// (white reachable). Mirrors DebayerCpu::updateGammaTable; k0=0.72, k1=1.0,
++// a=1.5 -> peak slope 1.38, end slope 0.40.
++const float kShoulderK0 = 0.72;
++const float kShoulderK1 = 1.0;
++const float kShoulderA = 1.5;
++
++float apply_shoulder(float value)
++{
++    float w = smoothstep(kShoulderK0, kShoulderK1, value);
++    float shoulder = (1.0 + kShoulderA) * value / (1.0 + kShoulderA * value);
++    return value + w * (shoulder - value);
++}
++
+ void main(void) {
+     vec3 rgb;
+ 
+@@ -149,6 +166,11 @@ void main(void) {
+     rgb.g = apply_contrast(rgb.g);
+     rgb.b = apply_contrast(rgb.b);
+ 
++    /* Soft highlight shoulder before gamma */
++    rgb.r = apply_shoulder(rgb.r);
++    rgb.g = apply_shoulder(rgb.g);
++    rgb.b = apply_shoulder(rgb.b);
++
+     /* Apply gamma after colour correction */
+     rgb = pow(rgb, vec3(gamma));
+ 
 diff --git a/src/libcamera/software_isp/debayer_cpu.cpp b/src/libcamera/software_isp/debayer_cpu.cpp
-index 49382b4..bc46fd8 100644
+index 49382b4..9cbdf31 100644
 --- a/src/libcamera/software_isp/debayer_cpu.cpp
 +++ b/src/libcamera/software_isp/debayer_cpu.cpp
 @@ -48,6 +48,7 @@ private:
@@ -601,7 +681,43 @@ index 49382b4..bc46fd8 100644
  	linePointers[patternHeight] = lineBuffers_[lineBufferIndex_].data() + lineBufferPadding_;
  
  	lineBufferIndex_ = (lineBufferIndex_ + 1) % (patternHeight + 1);
-@@ -1075,6 +1126,10 @@ void DebayerCpu::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
+@@ -982,6 +1033,22 @@ void DebayerCpu::updateGammaTable(const DebayerParams &params)
+ 	const float gamma = params.gamma;
+ 	const float contrastExp = params.contrastExp;
+ 
++	/*
++	 * Soft highlight shoulder. A Naka-Rushton roll-off
++	 * shoulder(v) = (1 + a) v / (1 + a v) is blended toward the identity
++	 * with a smoothstep weight w = smoothstep(k0, k1, v), so the composite
++	 * f(v) = v + w * (shoulder(v) - v) is C1 everywhere: the slope is
++	 * continuous (no step, hence no Mach band on smooth gradients). Below
++	 * k0, w = 0 (identity, midtones untouched); at k1, w = 1 and since
++	 * shoulder(1) = 1 we get f(1) = 1 exactly, so white stays reachable
++	 * (255 after gamma). k0 = 0.72, k1 = 1.0, a = 1.5 give a peak slope of
++	 * 1.38, an end slope of 0.40 at white, and a peak lift of about +5
++	 * output levels near v = 0.84, with zero shift below k0.
++	 */
++	constexpr float kShoulderK0 = 0.72f;
++	constexpr float kShoulderK1 = 1.0f;
++	constexpr float kShoulderA = 1.5f;
++
+ 	const float divisor = gammaTable_.size() - 1.0;
+ 	for (auto [i, value] : utils::enumerate(gammaTable_)) {
+ 		float normalized = i / divisor;
+@@ -991,6 +1058,12 @@ void DebayerCpu::updateGammaTable(const DebayerParams &params)
+ 			normalized = 0.5 * std::pow(normalized / 0.5, contrastExp);
+ 		else
+ 			normalized = 1.0 - 0.5 * std::pow((1.0 - normalized) / 0.5, contrastExp);
++		/* Soft highlight shoulder (folded into the LUT, zero per-pixel cost) */
++		float t = (normalized - kShoulderK0) / (kShoulderK1 - kShoulderK0);
++		t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
++		const float w = t * t * (3.0f - 2.0f * t);
++		const float shoulder = (1.0f + kShoulderA) * normalized / (1.0f + kShoulderA * normalized);
++		normalized += w * (shoulder - normalized);
+ 		value = UINT8_MAX * std::pow(normalized, gamma);
+ 	}
+ }
+@@ -1075,6 +1148,10 @@ void DebayerCpu::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
  
  	updateLookupTables(params);
  
