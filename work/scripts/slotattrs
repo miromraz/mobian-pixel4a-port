@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Dump Qualcomm A/B slot metadata from GPT partition-entry attributes.
+
+Reads the primary AND backup GPT so we can tell whether a writer updated both.
+qcom bootctrl bit layout: prio 48-49, active 50, retry 51-53, success 54, unbootable 55.
+"""
+import struct
+import sys
+
+# /dev/sda on sunfish is a 4096-byte-logical-sector UFS LUN: the GPT header is at
+# byte 4096, not 512. Read it rather than assuming.
+SS = int(open("/sys/block/sda/queue/logical_block_size").read())
+WANT = ("boot_a", "boot_b")
+
+
+def entries(f, lba, n, esz):
+    f.seek(SS * lba)
+    d = f.read(n * esz)
+    out = {}
+    for i in range(n):
+        e = d[i * esz:(i + 1) * esz]
+        if e[:16] == b"\0" * 16:
+            continue
+        name = e[56:128].decode("utf-16-le").rstrip("\0")
+        if name in WANT:
+            out[name] = struct.unpack("<Q", e[48:56])[0]
+    return out
+
+
+def fmt(at):
+    return (f"attr=0x{at:016x} prio={(at >> 48) & 3} active={(at >> 50) & 1} "
+            f"tries={(at >> 51) & 7} success={(at >> 54) & 1} "
+            f"unbootable={(at >> 55) & 1}")
+
+
+with open("/dev/sda", "rb") as f:
+    f.seek(SS)                                   # primary header @ LBA1
+    pe_lba, npart, esz = struct.unpack("<QII", f.read(92)[72:88])
+    prim = entries(f, pe_lba, npart, esz)
+
+    f.seek(SS)                                   # backup header location
+    alt = struct.unpack("<Q", f.read(92)[32:40])[0]
+    f.seek(SS * alt)
+    bpe_lba, bnpart, besz = struct.unpack("<QII", f.read(92)[72:88])
+    back = entries(f, bpe_lba, bnpart, besz)
+
+tag = sys.argv[1] if len(sys.argv) > 1 else ""
+for name in WANT:
+    p, b = prim.get(name), back.get(name)
+    flag = "" if p == b else "   <== PRIMARY/BACKUP MISMATCH"
+    print(f"{tag:>12} {name:<7} {fmt(p)}{flag}")

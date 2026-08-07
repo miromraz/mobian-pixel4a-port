@@ -1,0 +1,70 @@
+#!/bin/sh
+# ponytail: reached ONLY as init= from slotflip*.efi. Flips the A/B slot and reboots
+# so stock ABL boots the other slot. Never returns.
+#
+# qbootctl -m must run BEFORE -s: -s resets the TARGET slot to success=0,tries=1, so
+# marking the slot we are leaving keeps Mobian's slot permanently trusted and lets ABL
+# fall back to it if the other side fails to boot.
+mount -t proc proc /proc 2>/dev/null
+
+LOG=/var/log/slotflip.log
+Q=/sbin/qbootctl
+
+say() {
+	echo "slotflip: $*"
+	echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$LOG" 2>/dev/null
+}
+
+t=$(sed -n 's/.*slotflip=\([ab]\).*/\1/p' /proc/cmdline)
+c=$($Q -c 2>/dev/null | sed -n 's/.*_\([ab]\).*/\1/p')
+
+say "start: current=${c:-?} target=${t:-none}"
+$Q -m
+
+# Refuse to flip to a slot that has no Android boot image, otherwise selecting
+# "Android" in the U-Boot menu just reboots into U-Boot again, forever.
+# Discriminator: an Android boot.img carries a real Linux kernel (>4 MiB); our U-Boot
+# images are ~600 KiB. Don't test the gzip FNAME - it is absent in rebuilt images.
+if [ -n "$t" ]; then
+	dev=/dev/sda6
+	[ "$t" = b ] && dev=/dev/sda7
+	if ! python3 - "$dev" <<-'PY'
+		import struct, sys
+		d = open(sys.argv[1], 'rb').read(4096)
+		ok = d[:8] == b'ANDROID!' and struct.unpack('<I', d[8:12])[0] > 4 * 1024 * 1024
+		sys.exit(0 if ok else 1)
+	PY
+	then
+		say "slot $t has no Android boot image (U-Boot or empty): Android not installed yet"
+		say "NOT flipping; continuing into Mobian instead"
+		exec /sbin/init
+	fi
+fi
+
+if [ -n "$t" ]; then
+	$Q -s "$t"
+	[ "$t" = "$c" ] && $Q -m   # no-op flip (test path): re-mark as successful
+fi
+$Q >> "$LOG" 2>&1
+say "slots written - REBOOTING ON PURPOSE in 3s, this is not a crash"
+sync
+sleep 3
+
+# Three reboot paths, each logged, because a silent failure here leaves PID 1 parked
+# and looks exactly like a crash.
+echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
+say "try 1: sysrq"
+echo b > /proc/sysrq-trigger 2>/dev/null
+sleep 3
+
+say "try 2: reboot -f"
+/sbin/reboot -f 2>/dev/null
+sleep 3
+
+say "try 3: reboot() syscall"
+python3 -c 'import ctypes; ctypes.CDLL(None).reboot(0x1234567)' 2>/dev/null
+sleep 3
+
+# PID 1 must never exit, or the kernel panics.
+say "ALL REBOOT PATHS FAILED - parking; hold power to force off"
+while :; do sleep 60; done

@@ -29,9 +29,22 @@ flashed **inside** the Android `userdata` partition. The nested image is created
 The initramfs exposes the nested root via an **offset loop device**:
 
 ```sh
-losetup -o 537919488 --show -f /dev/disk/by-partlabel/userdata
+losetup -o 537919488 --show -f /dev/disk/by-partlabel/linux   # or .../userdata
 # 537919488 = root partition start sector (131328) * 4096
 ```
+
+The hosting partition is looked up by partlabel **`linux` first, falling back to
+`userdata`**, so a single image works whether or not the disk has been repartitioned for
+Android dual-boot. `userdata` is waited for unconditionally (it always exists) as the
+"udev has read the GPT" signal, then `linux` overrides it if present — important, because
+after a dual-boot repartition `userdata` is *Android's* data partition and offset-looping
+onto it would mount garbage.
+
+U-Boot's `preboot` has **no such fallback**: it `blkmap`s exactly one partition by name, so
+the U-Boot image and the initramfs must agree. A single U-Boot image cannot cover both names,
+because U-Boot may abandon the rest of a `;`-separated command list once a command fails —
+a `part start` for a non-existent partition can therefore take `blkmap create` down with it
+and leave the device unable to find the ESP at all.
 
 > ⚠️ `losetup --sector-size 4096 -P` **panics/stalls the kernel** on this device.
 > The plain offset loop (no `-P`, no `--sector-size`) is what works. The root is then

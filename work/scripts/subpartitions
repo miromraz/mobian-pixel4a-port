@@ -36,7 +36,13 @@ LOSETUP=/sbin/losetup.real
 [ -x "$LOSETUP" ] || LOSETUP=/usr/sbin/losetup.real
 UD=/dev/disk/by-partlabel/userdata
 i=0; while [ ! -e "$UD" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+# `userdata` always exists, so waiting on it is our "udev has read the GPT" signal.
+# After the repartition Mobian's image lives on `linux` and `userdata` is ANDROID's
+# data partition -- looping onto that would mount garbage. So prefer `linux`.
+[ -e /dev/disk/by-partlabel/linux ] && UD=/dev/disk/by-partlabel/linux
+[ -e "$UD" ] || UD=$(blkid -t PARTLABEL=linux -o device 2>/dev/null | head -1)
 [ -e "$UD" ] || UD=$(blkid -t PARTLABEL=userdata -o device 2>/dev/null | head -1)
+k "rootdev=$UD"
 ROOT_OFFSET=537919488   # mobian_root start: sector 131328 * 4096
 LD=$("$LOSETUP" -o "$ROOT_OFFSET" --show -f "$UD" 2>&1); rc=$?
 k "offsetloop rc=$rc ld=$LD"

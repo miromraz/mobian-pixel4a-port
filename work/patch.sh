@@ -159,6 +159,16 @@ WantedBy=multi-user.target
 UNIT
 mkdir -p rmnt/etc/systemd/system/multi-user.target.wants
 ln -sf /usr/lib/systemd/system/qbootctl-mark.service rmnt/etc/systemd/system/multi-user.target.wants/qbootctl-mark.service
+# --- U-Boot dual-boot: slotflip (the init= target of slotflip*.efi) + slotattrs (a
+# read-only GPT slot-attribute dumper for debugging). The three UKIs built on the ESP
+# below bake init=/usr/local/sbin/slotflip into their cmdline, so if this file is missing
+# the kernel panics with no init -- exactly the regression this preserves. slotflip flips
+# the A/B slot and reboots so stock ABL boots the other slot; at runtime it reaches
+# /sbin/qbootctl (installed just above).
+[ -f scripts/slotflip ] || { echo "FATAL: scripts/slotflip missing (fetch from device: ssh mobian@172.16.42.1 'cat /usr/local/sbin/slotflip')" >&2; exit 1; }
+install -Dm755 scripts/slotflip  rmnt/usr/local/sbin/slotflip
+install -Dm755 scripts/slotattrs rmnt/usr/local/sbin/slotattrs
+sh -n rmnt/usr/local/sbin/slotflip
 # Grow the root fs to fill userdata on first boot. The image ships a ~4.1G ext4 inside a
 # ~109G offset loop (loop0, created by the subpartitions initramfs hook); without this it
 # stays 4.1G and fills up the moment the full app set is installed (which silently breaks
@@ -721,6 +731,65 @@ if ! fdtget "$D" /smp2p-adsp/sleepstate-out qcom,entry-name >/dev/null 2>&1; the
   fdtput -t u "$D" /smp2p-adsp/sleepstate-out "#qcom,smem-state-cells" 1
 fi
 echo "dtb sleepstate entry: $(fdtget "$D" /smp2p-adsp/sleepstate-out qcom,entry-name 2>&1)"
+# --- U-Boot dual-boot UKIs: (re)build the three Unified Kernel Images the U-Boot boot menu
+# loads off the ESP -- mobian.efi (self-contained normal boot / shell recovery),
+# slotflip.efi (the "Android (slot B)" menu entry: flip A/B + reboot into ABL) and
+# slotflip-test.efi (a harmless slotflip=a no-op flip, for testing). Built HERE, AFTER the
+# BT-address + sleepstate fdtput edits above, so every UKI embeds the SAME final
+# vmlinuz.efi/initrd.img/dtb that Mobian itself boots. A fresh image that skipped this would
+# silently ship without slotflip.efi and the U-Boot Android entry would dead-end.
+# ukify is aarch64 (needs linuxaa64.efi.stub from systemd-boot-efi), so it runs in the
+# qemu-binfmt chroot on rmnt (re-mounted here; rmnt was unmounted for the ESP work). The
+# chroot can't see emnt, so stage the inputs into rmnt/tmp/uki, build, copy the .efi out.
+# ukify + stub come from forky: trixie's systemd-ukify is unsatisfiable against the image's
+# systemd/python3. Install systemd-boot-efi (EFI binaries only), NOT systemd-boot (its
+# kernel hooks would touch the ESP). RUUID is reused, not hardcoded. Fail loud on any miss.
+mount "${LOOP}p2" rmnt
+for d in proc sys dev dev/pts; do mount --bind "/$d" "rmnt/$d"; done
+[ -x rmnt/usr/local/sbin/slotflip ] || { echo "FATAL: rmnt/usr/local/sbin/slotflip missing; slotflip.efi would panic with no init" >&2; exit 1; }
+rm -rf rmnt/tmp/uki; mkdir -p rmnt/tmp/uki
+cp emnt/vmlinuz.efi emnt/initrd.img emnt/sm7150-google-sunfish.dtb rmnt/tmp/uki/
+RESOLV_LINK=
+[ -L rmnt/etc/resolv.conf ] && RESOLV_LINK=$(readlink rmnt/etc/resolv.conf)
+rm -f rmnt/etc/resolv.conf; cp /etc/resolv.conf rmnt/etc/resolv.conf
+CL="root=UUID=$RUUID rw rootwait watchdog.open_timeout=0"
+# NB: the chroot body is single-quoted (sh -ec '...') -- keep it apostrophe-free (a lone '
+# would truncate the script, a bug that once silently skipped the whole chroot). Cmdlines
+# are passed in as env vars (expanded by THIS shell, where $RUUID/$CL live) so the body
+# needs no host-side expansion at all.
+chroot rmnt /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
+  CL_MOBIAN="$CL quiet console=tty0" \
+  CL_FLIP="$CL console=tty0 init=/usr/local/sbin/slotflip slotflip=b" \
+  CL_TEST="$CL console=tty0 init=/usr/local/sbin/slotflip slotflip=a" \
+  sh -ec '
+  printf "deb http://deb.debian.org/debian forky main\n" > /etc/apt/sources.list.d/forky.list
+  printf "Package: *\nPin: release n=forky\nPin-Priority: 100\n" > /etc/apt/preferences.d/99-forky-low
+  apt-get update
+  apt-get install -y --no-install-recommends -t forky systemd-ukify systemd-boot-efi
+  cd /tmp/uki
+  for spec in "mobian.efi=$CL_MOBIAN" "slotflip.efi=$CL_FLIP" "slotflip-test.efi=$CL_TEST"; do
+    out=${spec%%=*}; cl=${spec#*=}
+    ukify build --linux=vmlinuz.efi --initrd=initrd.img \
+      --devicetree=sm7150-google-sunfish.dtb --cmdline="$cl" --output="$out"
+  done
+'
+rm -f rmnt/etc/resolv.conf
+[ -n "$RESOLV_LINK" ] && ln -s "$RESOLV_LINK" rmnt/etc/resolv.conf
+for f in mobian.efi slotflip.efi slotflip-test.efi; do
+  src="rmnt/tmp/uki/$f"
+  [ -s "$src" ] || { echo "FATAL: ukify did not produce $f" >&2; exit 1; }
+  sz=$(wc -c < "$src")
+  [ "$sz" -gt 20971520 ] || { echo "FATAL: $f is only $sz bytes (<20 MB); UKI build looks broken" >&2; exit 1; }
+  cp "$src" "emnt/$f"
+done
+rm -rf rmnt/tmp/uki
+echo "=== U-Boot dual-boot verification ==="
+[ -x rmnt/usr/local/sbin/slotflip ] || { echo "FATAL: rmnt/usr/local/sbin/slotflip not executable" >&2; exit 1; }
+sh -n rmnt/usr/local/sbin/slotflip
+ls -l rmnt/usr/local/sbin/slotflip rmnt/usr/local/sbin/slotattrs
+ls -l emnt/mobian.efi emnt/slotflip.efi emnt/slotflip-test.efi
+for d in dev/pts dev sys proc; do umount "rmnt/$d"; done
+umount rmnt
 sync
 umount emnt
 losetup -d "$LOOP"

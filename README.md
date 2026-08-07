@@ -199,8 +199,39 @@ Linaro also publishes Qualcomm U-Boot releases at
 
 > **What we can verify about our image:** it is `u-boot-nodtb.bin` with a
 > `google,sunfish` / `qcom,sm7150` device tree appended, packaged as an **Android boot
-> image header v0, page size 4096**. We have *not* re-derived the exact build and
-> packaging steps for sunfish from scratch, so if you do, please contribute them.
+> image header v0, page size 4096**.
+>
+> **Build and packaging, re-derived and verified 2026-08-07** (this closes the "we have not
+> re-derived it" gap that used to be here). From
+> [sm7150-mainline/u-boot](https://github.com/sm7150-mainline/u-boot) — the `tauchgang`
+> branch; the running binary reports its commit, e.g. `2026.01-rc3-gf8c04469e828`:
+>
+> ```sh
+> make CROSS_COMPILE=aarch64-linux-gnu- O=.output \
+>      qcom_defconfig qcom-phone.config tauchgang.config
+> make CROSS_COMPILE=aarch64-linux-gnu- O=.output \
+>      CONFIG_DEFAULT_DEVICE_TREE=qcom/sm7150-google-sunfish
+> ```
+>
+> `tauchgang.config` is the third fragment and is **mandatory** — it enables `CONFIG_BLKMAP`,
+> which the nested-ESP `preboot` depends on. Then package it:
+>
+> ```sh
+> gzip -9 -c .output/u-boot-nodtb.bin > kpayload.bin        # ~1.26 MB source binary
+> cat .output/dts/upstream/src/arm64/qcom/sm7150-google-sunfish.dtb >> kpayload.bin
+> mkbootimg --kernel kpayload.bin --ramdisk <any ramdisk> \
+>   --base 0x0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
+>   --second_offset 0xf00000 --tags_offset 0x100 \
+>   --pagesize 4096 --header_version 0 \
+>   --os_version 13.0.0 --os_patch_level 2023-08 -o u-boot.img
+> ```
+>
+> The control DTB is **appended after the gzip stream** (ABL does not supply it). `mkbootimg`
+> zeroes `second_addr` when `second_size` is 0, so patch that 4-byte field at offset 28 back
+> to `0x00f00000` afterwards — it lies outside the image `id` hash. The stock image also
+> carries a ramdisk that U-Boot ignores; keeping it makes the header byte-comparable to the
+> original. Verify by diffing every header field against a dump of the shipped `boot_a`:
+> only `kernel_size` and `id` should differ.
 >
 > Flash it **exactly as built**. Repackaging the same U-Boot into a v2 boot-image header
 > produced a non-booting device for us — header v0 or nothing.
@@ -213,6 +244,14 @@ fastboot flash userdata userdata-nested.simg
 fastboot --set-active=a                    # reset the A/B retry counter
 fastboot reboot
 ```
+
+> **If you have repartitioned for Android dual-boot**, the nested image no longer lives in
+> `userdata` — flash it to the partition you created for Linux instead
+> (`fastboot flash linux userdata-nested.simg`), and cap any post-install `resize2fs` at
+> that partition's size rather than the whole of former `userdata`. The initramfs looks for
+> partlabel `linux` first and falls back to `userdata`, so one image works either way; U-Boot's
+> `preboot` does **not** fall back, so it must name the same partition (see
+> [docs/internals.md](docs/internals.md)).
 
 To get into the bootloader: hold **Power + Volume-Down**.
 
