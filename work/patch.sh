@@ -364,8 +364,10 @@ fi
 # shutdown (rebooting with it loaded hangs the SoC). The load in ipa-late-load.sh is a no-op
 # once the softdep has already brought it in. cmdline module_blacklist=ipa is stripped in the
 # ESP step below.
-# ponytail: kept as-is because this is the configuration the device is verified on; the
-# re-probe half is a candidate for deletion once the modem actually comes online.
+# NOTE: ipa/ is a build input that is NOT committed here, so on a clean checkout this whole
+# block is skipped and the softdep above is the only thing ordering IPA -- which is the part
+# that actually matters. The dev device still has ipa-late-load.service enabled from an older
+# build; that is drift, not a requirement.
 if [ -d ipa ]; then
   install -Dm755 ipa/sbin/ipa-late-load.sh rmnt/usr/local/sbin/ipa-late-load.sh
   install -Dm755 ipa/sbin/ipa-teardown.sh  rmnt/usr/local/sbin/ipa-teardown.sh
