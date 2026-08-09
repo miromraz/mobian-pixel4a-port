@@ -53,8 +53,8 @@ The other ~90 branches there are older topic branches and upstream snapshots —
 
 | | |
 |-|-|
-| **Mobile data / calls / SMS** | ❌ SIM is read and the control plane comes up, but the radio never goes online. Known to be a software problem — the same hardware registers fine under LineageOS. |
-| **GPS** | ❌ not started. |
+| **Mobile data / calls / SMS** | ❌ SIM is read and the control plane comes up, but the radio never goes online (`DeviceNotReady`, no band table). Known to be a software problem — the same hardware, same radio image registers fine under LineageOS. Every AP-side avenue we know of is now closed by test rather than by guess. |
+| **GPS** | ❌ the AP-side stack is complete — the QMI LOC engine starts, streams NMEA, and gets gpsOneXTRA assistance injected — but the GNSS receiver reports 0 dB-Hz on every satellite. Same spot, same antenna, Android gets a 3.8 m fix in 39 s. So GNSS RF is dead for the same reason cellular RF is, and it is not a separate bug. |
 | Deep sleep / good battery life | ⚠️ suspend works but only saves ~20% versus idling awake, because the SoC never reaches its real low-power states. Under active investigation. |
 | Video **encode** | ❌ needs CVP support. |
 | Headphone jack detection | ❌ (headphones work, they're just not auto-detected.) |

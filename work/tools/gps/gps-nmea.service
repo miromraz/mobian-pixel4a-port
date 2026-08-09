@@ -1,0 +1,16 @@
+[Unit]
+Description=sunfish GNSS: QMI LOC engine -> NMEA fanout (geoclue unix + gpsd tcp)
+Documentation=file:///usr/local/share/doc/gps/README.md
+# LOC service rides QRTR; the qrtr/rmtfs stack must be up first.
+After=rmtfs.service qrtr-ns.service tqftpserv.service pd-mapper.service
+Wants=qrtr-ns.service rmtfs.service
+
+[Service]
+Type=simple
+# --serve: run forever, fan every NMEA sentence to unix (geoclue) + tcp (gpsd).
+ExecStart=/usr/local/bin/loc-follow.py --serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

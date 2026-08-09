@@ -1,0 +1,11 @@
+# /etc/default/gpsd for sunfish (Pixel 4a mainline).
+# gpsd dials OUT as a TCP client to loc-follow.py --serve's NMEA fanout.
+# NOTE: Debian gpsd is socket-activated; for always-on capture you must
+#       `systemctl enable --now gpsd.service` (not just gpsd.socket).
+DEVICES="tcp://127.0.0.1:5000"
+
+# -n: poll the device even before a client connects (don't wait for a GPS lock).
+GPSD_OPTIONS="-n"
+
+# No hot-plugged USB GPS on this device.
+USBAUTO="false"

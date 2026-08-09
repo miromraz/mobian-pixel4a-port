@@ -129,10 +129,17 @@ printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{powe
 # is harmless — that driver's discover() fails fast and the sensor is simply not offered.
 printf 'ACTION=="add", SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp*", ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel ssc-proximity"\n' \
   > rmnt/etc/udev/rules.d/81-iio-sensor-proxy-sunfish.rules
-# IPA (IP Accelerator) driver triggers a silent SoC reset ~13s into Mobian (confirmed via
-# live console: last msg every cycle is "ipa 1e40000.ipa: IPA driver setup completed").
-# It's only network offload -> blacklist it so the device boots to Phosh.
-mkdir -p rmnt/etc/modprobe.d; printf 'blacklist ipa\ninstall ipa /bin/true\n' > rmnt/etc/modprobe.d/blacklist-ipa.conf
+# IPA is NOT optional for the modem, and it must be up BEFORE the MPSS boots: Google's
+# firmware asserts if the AP-side IPA QMI service is absent when it initialises
+# (ipa_hwp_init.c: ipa_hwp_init_rsp_timer_cb: didnt rx any ind frm HWP) and then sits
+# hollow -- PIL succeeds, no RF. Same for the servreg locator: qcom_pd_mapper is the sole
+# one here (userspace pd-mapper is a no-op) and the modem registers its PDs against it
+# during boot. Order both ahead of the remoteproc that boots the MPSS.
+# This replaces the old `blacklist ipa` -- that dated from the early-init SoC reset, which
+# was really the rpmhpd sync_state clamp and is fixed elsewhere.
+mkdir -p rmnt/etc/modprobe.d
+printf 'softdep qcom_q6v5_pas pre: ipa qcom_pd_mapper\n' > rmnt/etc/modprobe.d/ipa-first.conf
+rm -f rmnt/etc/modprobe.d/blacklist-ipa.conf
 # venus: decode is fine to autoload, but the encoder's CVP path silently hard-resets the SoC
 # at STREAMON (the dsp_ifaceq patch got S_FMT working, real CVP on the CDSP is still missing).
 # venus-enc registering an encoder node is enough for a media app to pick it and reset the
@@ -322,6 +329,17 @@ if [ -d usbnet ]; then
   install -Dm755 usbnet/90-usb0-uplink rmnt/etc/NetworkManager/dispatcher.d/90-usb0-uplink
 fi
 
+# --- rmtfs must serve the modem's EFS READ-WRITE ---
+# Debian's rmtfs.service ships `rmtfs -r -P -s`, and upstream documents -r as "avoid writing
+# to storage": storage_pread/pwrite then operate on an in-RAM shadow buffer and storage_sync()
+# is a no-op, so every EFS write the modem makes is thrown away at reboot. That is why no
+# MCFG/PDC selection ever survived a boot here. Android's rmt_storage is read-write. Drop -r.
+# Not sunfish-specific: this affects any Debian install on a Qualcomm phone using the packaged
+# unit (rmtfs 1.1-4). Back up modemst1/modemst2/fsg/fsc before first boot with this enabled.
+install -d rmnt/etc/systemd/system/rmtfs.service.d
+printf '[Service]\nExecStart=\nExecStart=/usr/bin/rmtfs -P -s\n' \
+  > rmnt/etc/systemd/system/rmtfs.service.d/rw.conf
+
 # --- WCN3990 WiFi + Bluetooth bringup (qcom mainline userspace, replicating pmOS) ---
 # qrtr-ns + rmtfs come from apt above; tqftpserv + pd-mapper are prebuilt (built on-device
 # against Debian libs: tqftpserv->libqrtr+libzstd, pd-mapper->libqrtr+liblzma).
@@ -341,10 +359,13 @@ if [ -d wcn ]; then
   echo 'w /sys/module/firmware_class/parameters/path - - - - /lib/firmware/qcom/sm7150/google/sunfish' \
     > rmnt/etc/tmpfiles.d/qcom-fw-path.conf
 fi
-# --- IPA modem data path: load ipa LATE (after modem init) so rmnet_ipa0 comes up without
-# the early-init silent SoC reset, then re-probe ModemManager; tear ipa down cleanly on
-# shutdown (rebooting with it loaded hangs the SoC). cmdline module_blacklist=ipa is
-# stripped in the ESP step below; the modprobe.d blacklist still blocks boot autoload.
+# --- IPA modem data path. ipa itself now loads early via the softdep above; what is left
+# here is the rmnet_ipa0 / ModemManager re-probe after modem init, and the clean teardown on
+# shutdown (rebooting with it loaded hangs the SoC). The load in ipa-late-load.sh is a no-op
+# once the softdep has already brought it in. cmdline module_blacklist=ipa is stripped in the
+# ESP step below.
+# ponytail: kept as-is because this is the configuration the device is verified on; the
+# re-probe half is a candidate for deletion once the modem actually comes online.
 if [ -d ipa ]; then
   install -Dm755 ipa/sbin/ipa-late-load.sh rmnt/usr/local/sbin/ipa-late-load.sh
   install -Dm755 ipa/sbin/ipa-teardown.sh  rmnt/usr/local/sbin/ipa-teardown.sh

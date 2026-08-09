@@ -1,0 +1,13 @@
+[Unit]
+Description=Inject gpsOneXTRA assistance data into the GNSS engine
+After=network-online.target qrtr-ns.service
+Wants=network-online.target
+Before=gps-nmea.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/gps-xtra.sh
+
+[Install]
+WantedBy=multi-user.target
