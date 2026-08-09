@@ -1,12 +1,41 @@
 From 1de7f8a789b20ed28e21f3e942de0c3aa7ede4d9 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Miroslav=20Mr=C3=A1z?= <mraz.miro@seznam.cz>
 Date: Sun, 26 Jul 2026 01:07:45 +0200
-Subject: [PATCH 0/9] *** SUBJECT HERE ***
+Subject: [PATCH 0/9] media: venus: add SM7150 support
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-*** BLURB HERE ***
+Add Venus (IRIS1) video decode support for the Qualcomm SM7150, tested on a
+Google Pixel 4a (sunfish) running a mainline kernel.
+
+SM7150 pairs an IRIS1 core with a firmware-managed power-domain model that the
+existing venus resource data does not cover, so the bulk of this series is
+teaching venus about that variant rather than new functionality:
+
+ - The IRIS1 firmware reports its version with a different string layout, so
+   hfi_msgs never parsed a version out of it (patch 2).
+ - On this platform the firmware, not the driver, owns the core power domains.
+   pm_helpers gains a path for that (patch 3).
+ - New resource data, compatible and DT binding (patches 1, 5), plus the DTS
+   nodes to enable it (patches 6, 7).
+
+Three fixes are not SM7150-specific and stand on their own:
+
+ - venus: core: bound sys_error recovery retries (patch 4). A firmware that
+   fails to come back turns into an unbounded recovery loop today.
+ - venus: free session buffers on error-path teardown (patch 8). Leak on the
+   error path of session setup.
+ - venus: hfi_platform: honor codec blacklist on the platform codecs path
+   (patch 9). The blacklist was consulted on one path but not the other, so a
+   masked codec could still be selected. On sunfish this matters because MPEG2
+   has to be masked.
+
+Decode is verified working on sunfish for H.264, HEVC, VP8 and VP9, both warm
+and from a cold boot, via v4l2 and GStreamer. Encode is not addressed here: it
+needs CVP support that does not exist yet, and the encoder is left masked.
+
+Danila Tikhonov's patch is carried unchanged from the sm7150-mainline tree.
 
 Danila Tikhonov (1):
   arm64: dts: qcom: sm7150: add venus video codec node
