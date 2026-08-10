@@ -87,22 +87,22 @@ mkdir -p rmnt/etc/modules-load.d; echo qcom_wdt > rmnt/etc/modules-load.d/qcom_w
 # media-key passthrough device for BT headsets; joydev adds legacy /dev/input/js* for pads.
 # All three are =m and were NOT autoloaded -> load at boot.
 printf 'uhid\nuinput\njoydev\n' > rmnt/etc/modules-load.d/bluetooth-input.conf
-# BT-off crash fix: turning Bluetooth OFF while a device is still connected powers off the
-# WCN3990 mid-stream; the BT geni UART (88c000.serial) then runtime-autosuspends and
-# geni_se_resources_off gates its clock + drops its interconnect (ICC) vote while the serial
-# engine still has residual RX state from the live link -> the next bus access NoC-times-out
-# -> qcom_wdt resets the WHOLE phone. Keeping the BT geni runtime-active avoids the gating.
-# (Disconnect-first is safe; only the forcible down-with-live-link path hits this.)
+# The BT-off crash (turning Bluetooth OFF with a device still connected powers off the
+# WCN3990 mid-stream, the BT geni UART runtime-autosuspends, geni_se_resources_off drops its
+# interconnect vote while the serial engine still has residual RX state -> NoC timeout ->
+# qcom_wdt resets the phone) used to be worked around here by pinning 88c000.serial
+# runtime-active. That pin is gone: the ICC half is now fixed properly in the kernel by
+# marking the QUP0 BCM keepalive (drivers/interconnect/qcom/sm7150.c), and the pin cost deep
+# sleep -- it held gcc_qupv3_wrap0_s3_clk, hence bi_tcxo, up forever even with BT switched off.
 mkdir -p rmnt/etc/udev/rules.d
-printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/control}="on"\n' > rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
-# Same UART, second problem: gpio41 (its RX line) is also wired up as a dedicated wake
+# Second, unrelated problem on the same UART: gpio41 (its RX line) is also wired up as a dedicated wake
 # IRQ. TLMM deliberately keeps RAW_STATUS_EN set for edge IRQs while they are masked, so
 # every byte of BT traffic latches an edge that nothing ever acks. dev_pm_arm_wake_irq()
 # then arms an already-pending IRQ at dpm_suspend_noirq and irq_pm_handle_wakeup() aborts
 # the suspend ~1s in, every single time (pm_wakeup_irq reported IRQ 152). Arming is gated
 # on device_may_wakeup(), so clearing this is enough. Costs BT wake-from-suspend, which
 # has never worked on this port anyway.
-printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/wakeup}="disabled"\n' >> rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
+printf 'ACTION=="add", SUBSYSTEM=="platform", KERNEL=="88c000.serial", ATTR{power/wakeup}="disabled"\n' > rmnt/etc/udev/rules.d/90-bt-geni-no-autosuspend.rules
 # WCD9375 audio fix: the SoundWire paths program their data ports at stream
 # prepare using no-PM register transfers, which -EIO unless the SWR bus clock
 # (from the rx/tx macro, gated by the SoundWire controller's iface clock) is
